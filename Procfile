@@ -1,1 +1,1 @@
-web: ./pre_build.sh && python3 google_installer.py && uvicorn app:app --host 0.0.0.0 --port $PORT 
+web: python3 start.py 
