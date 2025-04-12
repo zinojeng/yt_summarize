@@ -1,220 +1,79 @@
-# YouTube 影片摘要生成器 - 開發進度與規劃
+# 專案進度追蹤
 
-## 已完成功能 (v1.0.0)
+本文件記錄 YouTube 影片摘要生成器的開發進度、待辦事項和未來規劃。
 
-### 基礎架構
-- [x] 專案基本架構設置
-- [x] 虛擬環境配置
-- [x] 依賴套件管理
-- [x] 環境變數處理
+## 已完成功能
 
-### 核心功能
-- [x] YouTube 影片下載
-- [x] 音訊轉換
-- [x] 語音轉文字
-- [x] 基礎摘要生成
+- [x] 使用 yt-dlp 下載 YouTube 影片
+- [x] 將影片轉換為音訊格式 (MP3)
+- [x] 自動分割超過大小限制的音訊檔案
+- [x] 使用 GPT-4o-transcribe 進行音訊轉文字
+- [x] 支援 Google Gemini 和 OpenAI 的多模型架構
+- [x] 改進摘要提示，生成更具分析性的摘要
+- [x] 檔案和目錄自動管理
+- [x] 完整的錯誤處理和日誌記錄
+- [x] 命令列參數支援 (--keep-audio, --log-level)
+- [x] 基本的 FastAPI Web 介面框架
 
-### 文件
-- [x] 基本使用說明
-- [x] 安裝指南
-- [x] 錯誤處理文檔
+## 待完成功能
 
-## 進行中 (v1.1.0)
+- [ ] 完善 FastAPI Web 介面實現
+  - [ ] 創建友好的前端介面
+  - [ ] 實現異步處理和任務佇列
+  - [ ] 添加處理進度顯示
+  - [ ] 提供歷史記錄和結果瀏覽
+- [ ] 添加多語言支援
+  - [ ] 允許用戶選擇摘要語言 (英文、日文等)
+- [ ] 實現批次處理功能，允許一次處理多個影片
+- [ ] 添加摘要結果的導出功能 (PDF, Markdown)
+- [ ] 視訊特定處理優化
+  - [ ] 特別處理針對音樂和教學類視訊的摘要
+  - [ ] 添加直播視訊的特殊處理邏輯
+- [ ] 添加自定義摘要模板
+- [ ] 實現用戶認證和 API 使用限制
+- [ ] 添加單元測試和集成測試
 
-### 功能優化
-- [ ] 進度條顯示
-  ```python
-  from tqdm import tqdm
-  # 下載進度顯示
-  def download_with_progress(self, url):
-      with tqdm(desc="下載中") as pbar:
-          # 實現進度更新
-  ```
-- [ ] 記憶體使用優化
-- [ ] 錯誤重試機制
+## 優化與加強方向
 
-### 使用者介面
-- [ ] 命令列參數擴展
-  ```python
-  parser.add_argument('--language', default='zh-tw', help='摘要語言')
-  parser.add_argument('--model', default='gpt-3.5-turbo', help='OpenAI 模型選擇')
-  ```
-- [ ] 互動式設定選項
+### 模型與算法
 
-## 計畫中 (v2.0.0)
+- [ ] 研究並測試不同模型參數對結果質量的影響
+- [ ] 探索更多摘要提示工程策略
+- [ ] 考慮添加 Claude, Llama 等其他模型支援
+- [ ] 研究本地模型部署可能性，減少 API 依賴
 
-### 功能擴展
-1. 批次處理
-```python
-class BatchProcessor:
-    def __init__(self):
-        self.queue = []
-        
-    def add_to_queue(self, url):
-        self.queue.append(url)
-        
-    def process_all(self):
-        for url in self.queue:
-            # 處理邏輯
-```
+### 用戶體驗
 
-2. 多語言支援
-```python
-class LanguageProcessor:
-    def __init__(self):
-        self.supported_languages = {
-            'zh-tw': '繁體中文',
-            'zh-cn': '簡體中文',
-            'en': 'English',
-            'ja': '日本語'
-        }
-```
+- [ ] 優化命令列輸出和進度顯示
+- [ ] 設計更直觀的 Web 介面
+- [ ] 提供結果預覽和編輯功能
+- [ ] 添加摘要結果評分系統，幫助改進模型
 
-3. 自訂摘要格式
-```python
-class SummaryFormatter:
-    def __init__(self):
-        self.templates = {
-            'default': {
-                'sections': ['重點', '摘要', '關鍵字'],
-                'format': 'markdown'
-            },
-            'academic': {
-                'sections': ['摘要', '方法', '結論'],
-                'format': 'latex'
-            }
-        }
-```
+### 技術與架構
 
-### 技術改進
-1. 資料庫整合
-```python
-from sqlalchemy import create_engine
+- [ ] 考慮用 Docker 容器化應用
+- [ ] 實現更高效的音訊處理和分割算法
+- [ ] 研究分散式處理可能性，處理大型視訊
+- [ ] 優化存儲策略，考慮使用資料庫而非文件系統
+- [ ] 探索 YouTube API 替代 yt-dlp 的可能性
+- [ ] 加強錯誤恢復和斷點續傳功能
 
-class DatabaseManager:
-    def __init__(self):
-        self.engine = create_engine('sqlite:///summaries.db')
-        
-    def save_summary(self, video_id, summary):
-        # 儲存摘要
-```
+### 業務與部署
 
-2. API 服務
-```python
-from fastapi import FastAPI
+- [ ] 研究運行成本和定價模型 (API 費用計算)
+- [ ] 考慮添加付費功能模塊
+- [ ] 研究合規問題 (API 使用條款、版權等)
+- [ ] 探索雲端部署方案 (AWS, Google Cloud, etc.)
 
-app = FastAPI()
+## 最近更新
 
-@app.post("/summarize")
-async def summarize_video(url: str):
-    # API 實現
-```
+- **2025-04-13**: 更新摘要提示格式，使用 gpt-4o-transcribe 模型替換 whisper-1，添加 FastAPI 依賴
+- **2025-04-XX**: 初始化專案結構，實現基本功能
 
-3. 快取機制
-```python
-class CacheManager:
-    def __init__(self):
-        self.cache_dir = "cache"
-        
-    def get_cached_summary(self, video_id):
-        # 快取處理
-```
+## 貢獻者
 
-## 未來展望 (v3.0.0+)
+- @zinojeng (主要開發者)
 
-### 進階功能
-1. 智慧分析
-- 情感分析
-- 主題分類
-- 關鍵時間點標記
+## 如何貢獻
 
-2. 多媒體整合
-- 縮圖生成
-- 重要片段擷取
-- 字幕生成
-
-3. 協作功能
-- 使用者註解
-- 分享機制
-- 評分系統
-
-### 效能優化
-1. 分散式處理
-```python
-class DistributedProcessor:
-    def __init__(self):
-        self.workers = []
-        
-    def distribute_tasks(self):
-        # 任務分配
-```
-
-2. GPU 加速
-```python
-class GPUAccelerator:
-    def __init__(self):
-        self.device = 'cuda'
-        
-    def process_audio(self):
-        # GPU 處理
-```
-
-## 待解決問題
-
-### 技術限制
-1. API 限制
-- 檔案大小限制
-- 請求頻率限制
-- 成本考量
-
-2. 效能問題
-- 長影片處理
-- 記憶體使用
-- 處理時間
-
-### 功能需求
-1. 使用者回饋
-- 摘要準確度
-- 格式客製化
-- 多語言需求
-
-2. 系統穩定性
-- 錯誤處理
-- 異常恢復
-- 資料備份
-
-## 開發時程
-
-### 短期（1-2個月）
-- v1.1.0 功能優化
-- 基礎 UI 改進
-- 文檔完善
-
-### 中期（3-6個月）
-- v2.0.0 功能擴展
-- API 服務建立
-- 資料庫整合
-
-### 長期（6個月以上）
-- v3.0.0 進階功能
-- 分散式系統
-- 商業模式整合
-
-## 參與貢獻
-歡迎協助以下工作：
-1. 程式碼優化
-2. 文檔翻譯
-3. 測試回饋
-4. 功能建議
-
-## 更新日誌
-
-### v1.0.0 (當前版本)
-- 基礎功能實現
-- 環境配置完成
-- 文檔建立
-
-### v1.1.0 (開發中)
-- 進度顯示功能
-- 參數配置優化
-- 錯誤處理強化
+如果您有興趣貢獻此專案，請查看 [README.md](README.md) 中的貢獻指南，或直接提交 Issue 和 Pull Request 討論您的想法。
