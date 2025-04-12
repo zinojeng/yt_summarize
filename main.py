@@ -760,26 +760,33 @@ def run_summary_process(url: str, keep_audio: bool = False):
 # 如果直接執行此腳本，則使用命令列模式（為了向後兼容）
 if __name__ == "__main__":
     import argparse
+    import sys
     
-    parser = argparse.ArgumentParser(description='YouTube 影片摘要生成器')
-    parser.add_argument('url', help='YouTube 影片網址')
-    parser.add_argument('--keep-audio', action='store_true', 
-                      help='保留音訊檔案（預設會刪除）')
-    parser.add_argument('--log-level', default='INFO', 
-                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                      help='設定日誌記錄級別 (預設: INFO)')
-    args = parser.parse_args()
-
-    # 根據參數設定日誌級別
-    logging.getLogger().setLevel(args.log_level.upper())
-    
-    # 呼叫新的處理函數
-    result = run_summary_process(args.url, args.keep_audio)
-    
-    # 顯示結果 (如果成功)
-    if result["status"] == "complete":
-        print("\n=== 摘要結果 ===")
-        print(result["summary"])
+    # 檢查是否作為模組被導入，或是直接在命令行運行
+    if len(sys.argv) == 1 and not sys.argv[0].endswith('main.py'):
+        # 被作為模組導入，不需要處理命令行參數
+        logging.info("main.py 被作為模組導入，跳過命令行參數處理")
     else:
-        print("\n=== 處理失敗 ===")
-        print(result["message"]) 
+        # 直接在命令行運行，需要處理參數
+        parser = argparse.ArgumentParser(description='YouTube 影片摘要生成器')
+        parser.add_argument('url', help='YouTube 影片網址')
+        parser.add_argument('--keep-audio', action='store_true', 
+                          help='保留音訊檔案（預設會刪除）')
+        parser.add_argument('--log-level', default='INFO', 
+                          choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                          help='設定日誌記錄級別 (預設: INFO)')
+        args = parser.parse_args()
+
+        # 根據參數設定日誌級別
+        logging.getLogger().setLevel(args.log_level.upper())
+        
+        # 呼叫新的處理函數
+        result = run_summary_process(args.url, args.keep_audio)
+        
+        # 顯示結果 (如果成功)
+        if result["status"] == "complete":
+            print("\n=== 摘要結果 ===")
+            print(result["summary"])
+        else:
+            print("\n=== 處理失敗 ===")
+            print(result["message"]) 
