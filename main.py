@@ -27,7 +27,8 @@ class YouTubeSummarizer:
         self.dirs = {
             'audio': os.path.join(self.base_dir, 'audio'),
             'transcript': os.path.join(self.base_dir, 'transcript'),
-            'summary': os.path.join(self.base_dir, 'summary')
+            'summary': os.path.join(self.base_dir, 'summary'),
+            'metadata': os.path.join(self.base_dir, 'metadata')
         }
         self.setup_directories()
         
@@ -135,7 +136,7 @@ class YouTubeSummarizer:
         try:
             print("\n=== 階段 1/4: 下載影片 ===")
             
-            # 基本下載選項，更新 outtmpl 為絕對路徑，指向 audio 目錄
+            # 基本下載選項
             self.ydl_opts.update({
                 'format': 'bestaudio/best',
                 'postprocessors': [{
@@ -143,7 +144,7 @@ class YouTubeSummarizer:
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'outtmpl': os.path.join(self.dirs['audio'], '%(title)s.%(ext)s'),
+                'outtmpl': os.path.join(self.dirs['audio'], '%(title)s.%(ext)s'),  # 使用絕對路徑指向 audio 目錄
                 'quiet': False,
                 'no_warnings': False,
                 'ignoreerrors': False,
