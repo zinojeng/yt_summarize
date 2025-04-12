@@ -9,34 +9,58 @@ import subprocess
 import json
 from datetime import datetime
 import google.generativeai as genai
+import logging  # 引入 logging 模組
+
+# 設定 logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 載入環境變數
 load_dotenv()
 
 class YouTubeSummarizer:
+    # 定義模型名稱常數
+    WHISPER_MODEL = "whisper-1"
+    GEMINI_MODEL = 'gemini-2.5-pro-exp-03-25'
+    OPENAI_FALLBACK_MODEL = "o3-mini"
+    DEFAULT_OPENAI_MODEL = "o3-mini" # 新增預設 OpenAI 模型
+
     def __init__(self):
         # 檢查 API 金鑰
         openai_api_key = os.getenv('OPENAI_API_KEY')
         gemini_api_key = os.getenv('GEMINI_API_KEY')
-        
+
         if not openai_api_key:
+            logging.error("錯誤：未設置 OpenAI API 金鑰")
             raise ValueError("未設置 OpenAI API 金鑰")
-            
-        if not gemini_api_key:
-            print("警告：未設置 Gemini API 金鑰，將使用 OpenAI 模型")
-        else:
-            # 初始化 Google Gemini
-            genai.configure(api_key=gemini_api_key)
-            self.use_gemini = True
-            print("使用 Google Gemini 模型生成摘要")
-        
-        # 初始化 OpenAI 客戶端
+
+        # 初始化 OpenAI 客戶端 (先初始化，因為可能是備用選項)
         self.client = OpenAI(api_key=openai_api_key)
         
-        # 設定 ffmpeg 和 ffprobe 的路徑
-        self.ffmpeg_path = "/opt/homebrew/bin/ffmpeg"
-        self.ffprobe_path = "/opt/homebrew/bin/ffprobe"
+        if not gemini_api_key:
+            logging.warning("警告：未設置 Gemini API 金鑰，將僅使用 OpenAI 模型")
+            self.use_gemini = False # 明確設置為 False
+        else:
+            try:
+                # 初始化 Google Gemini
+                genai.configure(api_key=gemini_api_key)
+                # 嘗試列出模型以驗證金鑰是否有效 (可選，但更可靠)
+                # genai.list_models()
+                self.use_gemini = True
+                logging.info(f"將優先使用 Google Gemini 模型 ({self.GEMINI_MODEL})")
+            except Exception as e:
+                logging.warning(f"初始化 Gemini 失敗: {e}。將僅使用 OpenAI 模型。")
+                self.use_gemini = False # 初始化失敗也設為 False
+
+        # 設定 ffmpeg 和 ffprobe 的路徑 (考慮從環境變數或設定檔讀取更佳)
+        self.ffmpeg_path = os.getenv('FFMPEG_PATH', "/opt/homebrew/bin/ffmpeg")
+        self.ffprobe_path = os.getenv('FFPROBE_PATH', "/opt/homebrew/bin/ffprobe")
         
+        # 檢查 ffmpeg/ffprobe 路徑是否存在
+        if not os.path.exists(self.ffmpeg_path):
+            logging.warning(f"警告: ffmpeg 路徑不存在: {self.ffmpeg_path}")
+        if not os.path.exists(self.ffprobe_path):
+            logging.warning(f"警告: ffprobe 路徑不存在: {self.ffprobe_path}")
+
         # 建立儲存目錄結構
         self.base_dir = "youtube_summary"
         self.dirs = {
@@ -47,7 +71,7 @@ class YouTubeSummarizer:
         }
         self.setup_directories()
         
-        # 加入進度回調函數
+        # 初始化 yt-dlp 選項 (後續 download_video 會覆蓋部分)
         self.ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
@@ -55,21 +79,25 @@ class YouTubeSummarizer:
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
-            'outtmpl': os.path.join(self.dirs['audio'], '%(title)s.%(ext)s'),
+            # 'outtmpl' 將在 download_video 中根據影片ID設定
             'quiet': True,
             'progress_hooks': [self.download_progress_hook],
+            'ffmpeg_location': os.path.dirname(self.ffmpeg_path) # 提供 ffmpeg 目錄
         }
         
         # 初始化進度條
         self.pbar = None
         
-        # 確保下載目錄存在
-        os.makedirs('downloads', exist_ok=True)
+        # 不再需要 'downloads' 目錄，檔案會直接存到影片ID子目錄
 
     def setup_directories(self):
         """建立必要的目錄結構"""
-        for dir_path in self.dirs.values():
-            os.makedirs(dir_path, exist_ok=True)
+        # 只建立基礎目錄，影片相關子目錄在下載時建立
+        os.makedirs(self.base_dir, exist_ok=True)
+        for key in ['audio', 'transcript', 'summary', 'metadata']:
+             # 確保基礎分類目錄存在，但不在此建立影片ID子目錄
+             os.makedirs(os.path.join(self.base_dir, key), exist_ok=True)
+
 
     def save_metadata(self, video_info, file_path):
         """儲存影片相關資訊"""
@@ -79,11 +107,15 @@ class YouTubeSummarizer:
             'duration': video_info.get('duration'),
             'upload_date': video_info.get('upload_date'),
             'channel': video_info.get('channel'),
-            'processed_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'processed_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'video_id': video_info.get('id') # 也保存ID
         }
         
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            logging.error(f"儲存 metadata 失敗 ({file_path}): {e}")
 
     def download_progress_hook(self, d):
         """下載進度回調"""
@@ -91,64 +123,140 @@ class YouTubeSummarizer:
             if not self.pbar:
                 try:
                     total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                    self.pbar = tqdm(
-                        total=total,
-                        unit='B',
-                        unit_scale=True,
-                        desc="下載進度"
-                    )
-                except:
-                    pass
-            
+                    if total > 0: # 確保 total 大於 0
+                        self.pbar = tqdm(
+                            total=total,
+                            unit='B',
+                            unit_scale=True,
+                            desc="下載進度"
+                        )
+                    else:
+                        # 如果無法獲取總大小，提供一個不確定進度的進度條
+                        self.pbar = tqdm(desc="下載進度 (大小未知)", unit='B', unit_scale=True)
+                except Exception as e: # 捕獲更具體的異常更好，但至少記錄
+                    logging.warning(f"初始化下載進度條時出錯: {e}")
+                    # 即使出錯，也創建一個簡單的進度條
+                    if not self.pbar:
+                       self.pbar = tqdm(desc="下載中...", unit='B', unit_scale=True)
+
             if self.pbar:
                 downloaded = d.get('downloaded_bytes', 0)
-                self.pbar.update(downloaded - self.pbar.n)
-                
+                 # 對於不確定進度的進度條，只更新已下載量
+                if self.pbar.total:
+                     self.pbar.update(downloaded - self.pbar.n)
+                else:
+                     self.pbar.n = downloaded
+                     self.pbar.refresh()
+
         elif d['status'] == 'finished':
             if self.pbar:
+                # 確保完成時進度條達到100% (如果知道總量)
+                if self.pbar.total and self.pbar.n < self.pbar.total:
+                     self.pbar.update(self.pbar.total - self.pbar.n)
                 self.pbar.close()
-            print("下載完成，開始音訊處理...")
+                self.pbar = None # 重設 pbar
+            logging.info("下載完成，開始音訊處理...")
 
     def split_audio_ffmpeg(self, input_file, segment_duration=600):
         """使用 FFmpeg 分割音訊檔案"""
         try:
-            print("\n正在分割音訊檔案...")
-            
-            # 指定 ffprobe 和 ffmpeg 的完整路徑
-            ffprobe_path = "/opt/homebrew/bin/ffprobe"
-            ffmpeg_path = "/opt/homebrew/bin/ffmpeg"
-            
+            logging.info("\n正在分割音訊檔案...")
+
+            # 檢查輸入檔案是否存在
+            if not os.path.exists(input_file):
+                logging.error(f"輸入音訊檔案不存在: {input_file}")
+                return None
+
+            # 指定 ffprobe 和 ffmpeg 的路徑 (從 __init__ 取得)
+            ffprobe_path = self.ffprobe_path
+            ffmpeg_path = self.ffmpeg_path
+
             # 獲取音訊時長
-            probe_cmd = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', 
+            probe_cmd = [ffprobe_path, '-v', 'quiet', '-print_format', 'json',
                         '-show_format', input_file]
-            probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
-            duration = float(json.loads(probe_output)['format']['duration'])
-            
+            try:
+                probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
+                duration = float(json.loads(probe_output)['format']['duration'])
+            except subprocess.CalledProcessError as e:
+                 logging.error(f"執行 ffprobe 失敗 ({input_file}): {e}")
+                 return None
+            except (KeyError, json.JSONDecodeError, ValueError) as e:
+                 logging.error(f"解析 ffprobe 輸出失敗 ({input_file}): {e}")
+                 return None
+
             # 計算需要分割的段數
             num_segments = int(duration / segment_duration) + 1
             segments = []
-            
+            logging.info(f"音訊總時長 {duration:.2f} 秒，將分割為 {num_segments} 段。")
+
             with tqdm(total=num_segments, desc="分割進度") as pbar:
                 for i in range(num_segments):
                     start_time = i * segment_duration
                     output_file = f"{input_file[:-4]}_part{i+1}.mp3"
-                    
+
+                    # 使用明確的編碼而非簡單複製，以確保格式兼容性
                     cmd = [
                         ffmpeg_path, '-y', '-i', input_file,
                         '-ss', str(start_time),
                         '-t', str(segment_duration),
-                        '-acodec', 'copy',
+                        '-ar', '16000',  # 設定採樣率為16kHz (Whisper 建議)
+                        '-ac', '1',      # 單聲道
+                        '-c:a', 'libmp3lame',  # 使用 mp3 編碼器
+                        '-b:a', '128k',   # 位元率
+                        '-write_xing', '0',  # 關閉某些 mp3 的特殊標頭
+                        '-loglevel', 'error', # 只記錄 FFmpeg 的錯誤訊息
                         output_file
                     ]
-                    
-                    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    segments.append(output_file)
+
+                    try:
+                        # 使用 capture_output=True 來捕獲 stdout 和 stderr
+                        result = subprocess.run(cmd, capture_output=True, text=True, check=False) # check=False 避免失敗時拋出例外
+
+                        # 檢查返回碼
+                        if result.returncode != 0:
+                            logging.error(f"FFmpeg 分割錯誤 (段 {i+1}/{num_segments}):\\n命令: {' '.join(cmd)}\\n錯誤輸出:\\n{result.stderr}")
+                            # 決定是否中止，或只是跳過此分段
+                            # 此處選擇中止，因為一個分段失敗可能意味著後續也會失敗
+                            # 清理已成功創建的分段
+                            for seg_path in segments:
+                                try:
+                                    if os.path.exists(seg_path): os.remove(seg_path)
+                                except OSError as e_rem:
+                                    logging.warning(f"清理失敗的分段檔案 {seg_path} 時出錯: {e_rem}")
+                            return None # 返回 None 表示分割失敗
+                        else:
+                             # 如果 FFmpeg 可能有警告或其他非錯誤輸出，可以選擇性記錄
+                             # if result.stderr:
+                             #    logging.debug(f"FFmpeg stderr (段 {i+1}): {result.stderr}")
+                             segments.append(output_file)
+
+                    except FileNotFoundError:
+                         logging.error(f"找不到 FFmpeg 執行檔: {ffmpeg_path}")
+                         return None # FFmpeg 不存在，無法繼續
+                    except Exception as e: # 捕獲其他可能的 subprocess 錯誤
+                         logging.error(f"執行 FFmpeg 時發生未預期錯誤 (段 {i+1}): {e}")
+                         # 同樣清理並返回 None
+                         for seg_path in segments:
+                              try:
+                                   if os.path.exists(seg_path): os.remove(seg_path)
+                              except OSError as e_rem:
+                                   logging.warning(f"清理失敗的分段檔案 {seg_path} 時出錯: {e_rem}")
+                         return None
+
                     pbar.update(1)
-            
+
+            logging.info(f"音訊分割完成，共 {len(segments)} 段。")
             return segments
-            
+
         except Exception as e:
-            print(f"分割音訊時發生錯誤: {str(e)}")
+            logging.error(f"分割音訊時發生未預期的錯誤: {e}")
+            # 確保任何已創建的分段檔被清理
+            if 'segments' in locals():
+                for seg_path in segments:
+                    try:
+                        if os.path.exists(seg_path): os.remove(seg_path)
+                    except OSError as e_rem:
+                        logging.warning(f"在最終錯誤處理中清理分段檔案 {seg_path} 時出錯: {e_rem}")
             return None
 
     def download_video(self, url):
@@ -317,46 +425,67 @@ class YouTubeSummarizer:
     def transcribe_audio(self, audio_path):
         """使用 OpenAI Whisper 轉錄音訊"""
         try:
-            print("\n=== 階段 2/4: 音訊轉錄 ===")
+            logging.info("\n=== 階段 2/4: 音訊轉錄 ===")
+            if not os.path.exists(audio_path):
+                logging.error(f"音訊檔案不存在: {audio_path}")
+                return None
+
             file_size = os.path.getsize(audio_path)
-            max_size = 25 * 1024 * 1024
+            max_size = 25 * 1024 * 1024 # 25MB
             
+            transcript_text = ""
             if file_size > max_size:
-                print("檔案超過大小限制，進行分割...")
+                logging.info("檔案超過大小限制 (%.2f MB)，進行分割...", file_size / (1024*1024))
                 segments = self.split_audio_ffmpeg(audio_path)
                 if not segments:
-                    return None
+                    logging.error("音訊分割失敗。")
+                    return None # 明確返回 None
                     
-                full_transcript = ""
-                with tqdm(total=len(segments), desc="轉錄進度") as pbar:
-                    for segment_path in segments:
-                        with open(segment_path, "rb") as audio_file:
-                            transcript = self.client.audio.transcriptions.create(
-                                model="whisper-1",
-                                file=audio_file
-                            )
-                        full_transcript += transcript.text + "\n"
-                        os.remove(segment_path)
-                        pbar.update(1)
-                        
-                return full_transcript
+                full_transcript = [] # 改用列表存儲，最後 join
+                with tqdm(total=len(segments), desc="轉錄分段") as pbar:
+                    for i, segment_path in enumerate(segments):
+                        try:
+                             logging.info(f"正在轉錄分段 {i+1}/{len(segments)}...")
+                             with open(segment_path, "rb") as audio_file:
+                                transcript = self.client.audio.transcriptions.create(
+                                    model=self.WHISPER_MODEL, # 使用常數
+                                    file=audio_file
+                                )
+                             full_transcript.append(transcript.text)
+                        except Exception as e:
+                             logging.error(f"轉錄分段 {segment_path} 失敗: {e}")
+                             # 可以選擇跳過此分段或中止
+                        finally:
+                             try: # 清理分段檔案
+                                 if os.path.exists(segment_path):
+                                     os.remove(segment_path)
+                             except OSError as e:
+                                 logging.warning(f"刪除分段檔案 {segment_path} 失敗: {e}")
+                             pbar.update(1)
+
+                transcript_text = "\n".join(full_transcript) # 合併轉錄結果
             else:
-                print("開始轉錄...")
-                with open(audio_path, "rb") as audio_file:
-                    transcript = self.client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=audio_file
-                    )
-                return transcript.text
+                logging.info("檔案大小 %.2f MB，直接轉錄...", file_size / (1024*1024))
+                with tqdm(total=1, desc="轉錄進度") as pbar:
+                     with open(audio_path, "rb") as audio_file:
+                        transcript = self.client.audio.transcriptions.create(
+                            model=self.WHISPER_MODEL, # 使用常數
+                            file=audio_file
+                        )
+                     transcript_text = transcript.text
+                     pbar.update(1)
+
+            logging.info("音訊轉錄完成。")
+            return transcript_text
                 
         except Exception as e:
-            print(f"轉錄失敗: {str(e)}")
+            logging.error(f"轉錄音訊時發生未預期的錯誤: {e}")
             return None
 
     def transcribe_and_save(self, audio_path, video_dirs):
         """轉錄音訊並儲存"""
         try:
-            print("\n=== 階段 2/4: 音訊轉錄 ===")
+            logging.info("\n=== 階段 2/4: 音訊轉錄 ===")
             transcript = self.transcribe_audio(audio_path)
             
             if transcript:
@@ -367,18 +496,22 @@ class YouTubeSummarizer:
                 )
                 with open(transcript_path, 'w', encoding='utf-8') as f:
                     f.write(transcript)
-                print(f"轉錄文字已儲存至: {transcript_path}")
+                logging.info(f"轉錄文字已儲存至: {transcript_path}")
                 
             return transcript
             
         except Exception as e:
-            print(f"轉錄失敗: {str(e)}")
+            logging.error(f"轉錄失敗: {str(e)}")
             return None
 
     def generate_summary(self, transcript, title, description):
         """生成摘要"""
         try:
-            print("\n=== 階段 3/4: 生成摘要 ===")
+            logging.info("\n=== 階段 3/4: 生成摘要 ===")
+            if not transcript:
+                 logging.warning("轉錄內容為空，無法生成摘要。")
+                 return None
+
             with tqdm(total=1, desc="AI 處理") as pbar:
                 prompt = f"""
                 標題: {title}
@@ -391,42 +524,55 @@ class YouTubeSummarizer:
                 3. 關鍵字（5-7個）
                 """
                 
-                # 檢查是否使用 Gemini 模型
-                if hasattr(self, 'use_gemini') and self.use_gemini:
+                summary_content = None
+                # 根據 __init__ 的設定決定使用哪個模型
+                if self.use_gemini:
                     try:
-                        # 使用 Google Gemini 模型
-                        gemini_model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+                        logging.info(f"嘗試使用 Gemini 模型 ({self.GEMINI_MODEL})...")
+                        gemini_model = genai.GenerativeModel(self.GEMINI_MODEL) # 使用常數
                         gemini_response = gemini_model.generate_content(prompt)
                         summary_content = gemini_response.text
-                        print("使用 Gemini 2.5 Pro Experimental 模型生成摘要成功")
+                        logging.info(f"使用 Gemini {self.GEMINI_MODEL} 模型生成摘要成功")
                     except Exception as e:
-                        print(f"Gemini 模型錯誤: {str(e)}，切換至 OpenAI 模型")
-                        # 如果 Gemini 失敗，回退到 OpenAI
+                        logging.warning(f"Gemini 模型 ({self.GEMINI_MODEL}) 錯誤: {e}，切換至 OpenAI 模型")
+                        # Gemini 失敗，回退到 OpenAI
+                        try:
+                             logging.info(f"嘗試使用 OpenAI 回退模型 ({self.OPENAI_FALLBACK_MODEL})...")
+                             response = self.client.chat.completions.create(
+                                model=self.OPENAI_FALLBACK_MODEL, # 使用常數
+                                messages=[{"role": "user", "content": prompt}]
+                            )
+                             summary_content = response.choices[0].message.content
+                             logging.info(f"使用 OpenAI {self.OPENAI_FALLBACK_MODEL} 模型生成摘要成功")
+                        except Exception as openai_e:
+                             logging.error(f"OpenAI 回退模型 ({self.OPENAI_FALLBACK_MODEL}) 也失敗: {openai_e}")
+                             # 兩者都失敗，返回 None
+                else:
+                    # 直接使用 OpenAI 模型
+                    try:
+                        logging.info(f"使用預設 OpenAI 模型 ({self.DEFAULT_OPENAI_MODEL})...")
                         response = self.client.chat.completions.create(
-                            model="gpt-4o-mini",
+                            model=self.DEFAULT_OPENAI_MODEL, # 使用常數
                             messages=[{"role": "user", "content": prompt}]
                         )
                         summary_content = response.choices[0].message.content
-                else:
-                    # 使用 OpenAI 模型
-                    response = self.client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    summary_content = response.choices[0].message.content
-                
+                        logging.info(f"使用 OpenAI {self.DEFAULT_OPENAI_MODEL} 模型生成摘要成功")
+                    except Exception as e:
+                         logging.error(f"OpenAI 模型 ({self.DEFAULT_OPENAI_MODEL}) 失敗: {e}")
+                         # OpenAI 也失敗，返回 None
+
                 pbar.update(1)
                 
             return summary_content
             
         except Exception as e:
-            print(f"生成摘要失敗: {str(e)}")
+            logging.error(f"生成摘要過程中發生未預期錯誤: {e}")
             return None
 
     def generate_and_save_summary(self, transcript, title, description, video_dirs):
         """生成並儲存摘要"""
         try:
-            print("\n=== 階段 3/4: 生成摘要 ===")
+            logging.info("\n=== 階段 3/4: 生成摘要 ===")
             summary = self.generate_summary(transcript, title, description)
             
             if summary:
@@ -437,18 +583,18 @@ class YouTubeSummarizer:
                 )
                 with open(summary_path, 'w', encoding='utf-8') as f:
                     f.write(summary)
-                print(f"摘要已儲存至: {summary_path}")
+                logging.info(f"摘要已儲存至: {summary_path}")
                 
             return summary
             
         except Exception as e:
-            print(f"生成摘要失敗: {str(e)}")
+            logging.error(f"生成摘要失敗: {str(e)}")
             return None
 
     def cleanup(self, audio_path):
         """清理暫存檔案"""
         try:
-            print("\n=== 階段 4/4: 清理暫存檔案 ===")
+            logging.info("\n=== 階段 4/4: 清理暫存檔案 ===")
             with tqdm(total=1, desc="清理進度") as pbar:
                 if os.path.exists(audio_path):
                     os.remove(audio_path)
@@ -465,64 +611,125 @@ class YouTubeSummarizer:
                 pbar.update(1)
                 
         except Exception as e:
-            print(f"清理失敗: {str(e)}")
+            logging.error(f"清理失敗: {str(e)}")
 
 def main():
     parser = argparse.ArgumentParser(description='YouTube 影片摘要生成器')
     parser.add_argument('url', help='YouTube 影片網址')
     parser.add_argument('--keep-audio', action='store_true', 
                       help='保留音訊檔案（預設會刪除）')
+    parser.add_argument('--log-level', default='INFO', 
+                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                      help='設定日誌記錄級別 (預設: INFO)')
     args = parser.parse_args()
+
+    # 根據參數設定日誌級別
+    logging.getLogger().setLevel(args.log_level.upper())
+
+    audio_path_to_clean = None # 初始化用於清理的路徑
+    video_dirs = None # 初始化影片目錄
 
     try:
         summarizer = YouTubeSummarizer()
         
-        # 顯示開始處理訊息
-        print("\n=== YouTube 影片摘要生成器 ===")
-        print(f"處理網址: {args.url}")
+        logging.info("\n=== YouTube 影片摘要生成器 ===")
+        logging.info(f"處理網址: {args.url}")
         
         start_time = time.time()
         
-        # 下載並處理影片
-        audio_path, title, description, video_dirs = summarizer.download_video(args.url)
-        if not audio_path:
-            return
+        # --- 階段 1: 下載與處理影片 ---
+        logging.info("\n--- 開始階段 1: 下載影片 ---")
+        # download_video 應返回 (audio_path, title, description, video_dirs) 或 (None, None, None, None)
+        download_result = summarizer.download_video(args.url)
+        if not download_result or not all(download_result):
+            logging.error("影片下載或初始處理失敗，無法繼續。請檢查上面的日誌獲取詳細資訊。")
+            return # 終止程式
+        
+        audio_path, title, description, video_dirs = download_result
+        audio_path_to_clean = audio_path # 記錄下需要清理的原始音訊路徑
+        logging.info("--- 階段 1 完成 ---")
 
-        # 轉錄並儲存
+        # --- 階段 2: 音訊轉錄 ---
+        logging.info("\n--- 開始階段 2: 音訊轉錄 ---")
+        # transcribe_and_save 應返回 transcript 或 None
         transcript = summarizer.transcribe_and_save(audio_path, video_dirs)
-        if not transcript:
-            return
+        if transcript is None: # 明確檢查 None
+            logging.error("音訊轉錄失敗，無法繼續。請檢查上面的日誌獲取詳細資訊。")
+            # 即使轉錄失敗，也可能需要清理音訊檔
+            if not args.keep_audio and audio_path_to_clean and os.path.exists(audio_path_to_clean):
+                 summarizer.cleanup(audio_path_to_clean) # 嘗試清理
+            return # 終止程式
+        logging.info("--- 階段 2 完成 ---")
 
-        # 生成並儲存摘要
+        # --- 階段 3: 生成摘要 ---
+        logging.info("\n--- 開始階段 3: 生成摘要 ---")
+        # generate_and_save_summary 應返回 summary 或 None
         summary = summarizer.generate_and_save_summary(
             transcript, title, description, video_dirs
         )
-        if summary:
-            print("\n=== 摘要結果 ===")
-            print(summary)
-
-        # 清理音訊檔案（除非指定保留）
-        if not args.keep_audio:
-            os.remove(audio_path)
-            print(f"\n音訊檔案已刪除: {audio_path}")
+        if summary is None: # 明確檢查 None
+            logging.warning("生成摘要失敗。摘要文件將不會被創建。請檢查上面的日誌。")
+            # 注意：即使摘要失敗，前面的步驟可能是成功的，所以不一定需要終止
         else:
-            print(f"\n音訊檔案已保留: {audio_path}")
+            logging.info("\n=== 摘要結果 ===")
+            print(summary) # 摘要成功才打印到控制台
+        logging.info("--- 階段 3 完成 ---")
+
+        # --- 階段 4: 清理 ---
+        # 只有在使用者未指定 --keep-audio 時才清理
+        if not args.keep_audio:
+             logging.info("\n--- 開始階段 4: 清理暫存檔案 ---")
+             if audio_path_to_clean:
+                 summarizer.cleanup(audio_path_to_clean)
+             else:
+                  logging.warning("沒有有效的音訊路徑可供清理。")
+             logging.info("--- 階段 4 完成 ---")
+        else:
+            logging.info("\n--- 階段 4: 清理已跳過 (使用者要求保留音訊) ---")
+            if audio_path_to_clean:
+                 logging.info(f"音訊檔案已保留: {audio_path_to_clean}")
         
         # 顯示總處理時間
         end_time = time.time()
         total_time = end_time - start_time
-        print(f"\n總處理時間: {total_time:.2f} 秒")
+        logging.info(f"\n總處理時間: {total_time:.2f} 秒")
         
         # 顯示檔案位置
-        print("\n檔案儲存位置:")
-        print(f"音訊檔案: {video_dirs['audio']}")
-        print(f"轉錄文字: {video_dirs['transcript']}")
-        print(f"摘要文件: {video_dirs['summary']}")
+        if video_dirs:
+            logging.info("\n檔案儲存位置:")
+            if os.path.exists(video_dirs.get('audio', '')):
+                 logging.info(f"音訊目錄: {video_dirs['audio']}")
+            if os.path.exists(video_dirs.get('transcript', '')):
+                 logging.info(f"轉錄目錄: {video_dirs['transcript']}")
+            if os.path.exists(video_dirs.get('summary', '')):
+                 logging.info(f"摘要目錄: {video_dirs['summary']}")
+            if os.path.exists(video_dirs.get('metadata', '')):
+                 logging.info(f"元數據目錄: {video_dirs['metadata']}")
         
     except KeyboardInterrupt:
-        print("\n程式被使用者中斷")
+        logging.warning("\n程式被使用者中斷")
+    except ValueError as ve:
+         # 捕獲 __init__ 中可能的 API 金鑰錯誤
+         logging.critical(f"初始化錯誤: {ve}") 
     except Exception as e:
-        print(f"\n程式執行出錯: {str(e)}")
+        logging.critical(f"\n程式執行過程中發生未預期的嚴重錯誤: {e}", exc_info=True) # 記錄 traceback
+    finally:
+         # 無論成功或失敗，如果需要清理音訊檔且未保留
+         if not args.keep_audio and audio_path_to_clean and os.path.exists(audio_path_to_clean):
+             logging.info("執行最終清理...")
+             # 確保 summarizer 實例存在才調用 cleanup
+             if 'summarizer' in locals() and summarizer is not None:
+                 try:
+                      summarizer.cleanup(audio_path_to_clean)
+                 except Exception as cleanup_e:
+                      logging.error(f"最終清理過程中出錯: {cleanup_e}")
+             else:
+                  # 如果 summarizer 初始化失敗，嘗試直接刪除
+                  try:
+                       os.remove(audio_path_to_clean)
+                       logging.info(f"直接刪除音訊檔案: {audio_path_to_clean}")
+                  except OSError as direct_remove_e:
+                       logging.error(f"最終嘗試直接刪除音訊檔案失敗: {direct_remove_e}")
 
 if __name__ == "__main__":
     main() 

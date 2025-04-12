@@ -49,7 +49,7 @@ OPENAI_API_KEY=你的OpenAI_API金鑰
 
 基本使用：
 ```bash
-python main.py "YouTube影片網址"
+python main.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
 ## 輸出結果

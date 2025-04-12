@@ -38,6 +38,7 @@ youtube_summary/
 *.mp4
 *.wav
 *.m4a
+*.webm
 
 # Logs
 *.log
