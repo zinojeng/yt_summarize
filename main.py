@@ -52,17 +52,29 @@ class YouTubeSummarizer:
                 self.use_gemini = False # 初始化失敗也設為 False
 
         # 設定 ffmpeg 和 ffprobe 的路徑 (考慮從環境變數或設定檔讀取更佳)
-        self.ffmpeg_path = os.getenv('FFMPEG_PATH', "/opt/homebrew/bin/ffmpeg")
-        self.ffprobe_path = os.getenv('FFPROBE_PATH', "/opt/homebrew/bin/ffprobe")
+        self.ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
+        self.ffprobe_path = os.getenv('FFPROBE_PATH', 'ffprobe')
         
-        # 檢查 ffmpeg/ffprobe 路徑是否存在
-        if not os.path.exists(self.ffmpeg_path):
-            logging.warning(f"警告: ffmpeg 路徑不存在: {self.ffmpeg_path}")
-        if not os.path.exists(self.ffprobe_path):
-            logging.warning(f"警告: ffprobe 路徑不存在: {self.ffprobe_path}")
+        # 檢查 ffmpeg/ffprobe 是否可用
+        try:
+            # 測試 ffmpeg 命令
+            subprocess.run([self.ffmpeg_path, '-version'], 
+                          stdout=subprocess.PIPE, 
+                          stderr=subprocess.PIPE, 
+                          check=True)
+            
+            # 測試 ffprobe 命令
+            subprocess.run([self.ffprobe_path, '-version'], 
+                          stdout=subprocess.PIPE, 
+                          stderr=subprocess.PIPE, 
+                          check=True)
+            
+            logging.info("ffmpeg 和 ffprobe 可用")
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            logging.warning(f"ffmpeg/ffprobe 測試失敗: {e}")
 
         # 建立儲存目錄結構
-        self.base_dir = "youtube_summary"
+        self.base_dir = os.getenv('TEMP_DIR', "youtube_summary")
         self.dirs = {
             'audio': os.path.join(self.base_dir, 'audio'),
             'transcript': os.path.join(self.base_dir, 'transcript'),
@@ -82,7 +94,8 @@ class YouTubeSummarizer:
             # 'outtmpl' 將在 download_video 中根據影片ID設定
             'quiet': True,
             'progress_hooks': [self.download_progress_hook],
-            'ffmpeg_location': os.path.dirname(self.ffmpeg_path) # 提供 ffmpeg 目錄
+            # 如果ffmpeg在PATH中，則不需要顯式設置
+            'ffmpeg_location': None if self.ffmpeg_path == 'ffmpeg' else os.path.dirname(self.ffmpeg_path)
         }
         
         # 初始化進度條

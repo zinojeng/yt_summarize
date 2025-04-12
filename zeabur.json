@@ -1,0 +1,10 @@
+{
+  "build": {
+    "main": "app.py",
+    "envs": [
+      "OPENAI_API_KEY",
+      "GOOGLE_API_KEY",
+      "PORT"
+    ]
+  }
+} 
