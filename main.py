@@ -8,6 +8,7 @@ import time
 import subprocess
 import json
 from datetime import datetime
+import google.generativeai as genai
 
 # 載入環境變數
 load_dotenv()
@@ -15,12 +16,26 @@ load_dotenv()
 class YouTubeSummarizer:
     def __init__(self):
         # 檢查 API 金鑰
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        gemini_api_key = os.getenv('GEMINI_API_KEY')
+        
+        if not openai_api_key:
             raise ValueError("未設置 OpenAI API 金鑰")
+            
+        if not gemini_api_key:
+            print("警告：未設置 Gemini API 金鑰，將使用 OpenAI 模型")
+        else:
+            # 初始化 Google Gemini
+            genai.configure(api_key=gemini_api_key)
+            self.use_gemini = True
+            print("使用 Google Gemini 模型生成摘要")
         
         # 初始化 OpenAI 客戶端
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=openai_api_key)
+        
+        # 設定 ffmpeg 和 ffprobe 的路徑
+        self.ffmpeg_path = "/opt/homebrew/bin/ffmpeg"
+        self.ffprobe_path = "/opt/homebrew/bin/ffprobe"
         
         # 建立儲存目錄結構
         self.base_dir = "youtube_summary"
@@ -98,8 +113,13 @@ class YouTubeSummarizer:
         """使用 FFmpeg 分割音訊檔案"""
         try:
             print("\n正在分割音訊檔案...")
+            
+            # 指定 ffprobe 和 ffmpeg 的完整路徑
+            ffprobe_path = "/opt/homebrew/bin/ffprobe"
+            ffmpeg_path = "/opt/homebrew/bin/ffmpeg"
+            
             # 獲取音訊時長
-            probe_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', 
+            probe_cmd = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', 
                         '-show_format', input_file]
             probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
             duration = float(json.loads(probe_output)['format']['duration'])
@@ -114,7 +134,7 @@ class YouTubeSummarizer:
                     output_file = f"{input_file[:-4]}_part{i+1}.mp3"
                     
                     cmd = [
-                        'ffmpeg', '-y', '-i', input_file,
+                        ffmpeg_path, '-y', '-i', input_file,
                         '-ss', str(start_time),
                         '-t', str(segment_duration),
                         '-acodec', 'copy',
@@ -136,6 +156,9 @@ class YouTubeSummarizer:
         try:
             print("\n=== 階段 1/4: 下載影片 ===")
             
+            # 找出 ffmpeg 的路徑
+            ffmpeg_path = "/opt/homebrew/bin"  # 這是您系統上 ffmpeg 的位置
+            
             # 基本下載選項
             self.ydl_opts.update({
                 'format': 'bestaudio/best',
@@ -144,14 +167,15 @@ class YouTubeSummarizer:
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'outtmpl': os.path.join(self.dirs['audio'], '%(title)s.%(ext)s'),  # 使用絕對路徑指向 audio 目錄
+                'outtmpl': os.path.join(self.dirs['audio'], '%(title)s.%(ext)s'),
                 'quiet': False,
                 'no_warnings': False,
                 'ignoreerrors': False,
                 'live_from_start': True,
                 'wait_for_video': (3, 60),
                 'restrictfilenames': True,
-                'keepvideo': True,  # 保留原始檔案以便除錯
+                'keepvideo': True,
+                'ffmpeg_location': ffmpeg_path,  # 指定 ffmpeg 的路徑
             })
 
             with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
@@ -367,13 +391,33 @@ class YouTubeSummarizer:
                 3. 關鍵字（5-7個）
                 """
                 
-                response = self.client.chat.completions.create(
-                    model="o3-mini",
-                    messages=[{"role": "user", "content": prompt}]
-                )
+                # 檢查是否使用 Gemini 模型
+                if hasattr(self, 'use_gemini') and self.use_gemini:
+                    try:
+                        # 使用 Google Gemini 模型
+                        gemini_model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+                        gemini_response = gemini_model.generate_content(prompt)
+                        summary_content = gemini_response.text
+                        print("使用 Gemini 2.5 Pro Experimental 模型生成摘要成功")
+                    except Exception as e:
+                        print(f"Gemini 模型錯誤: {str(e)}，切換至 OpenAI 模型")
+                        # 如果 Gemini 失敗，回退到 OpenAI
+                        response = self.client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        summary_content = response.choices[0].message.content
+                else:
+                    # 使用 OpenAI 模型
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    summary_content = response.choices[0].message.content
+                
                 pbar.update(1)
                 
-            return response.choices[0].message.content
+            return summary_content
             
         except Exception as e:
             print(f"生成摘要失敗: {str(e)}")
