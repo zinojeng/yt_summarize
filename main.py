@@ -1,7 +1,6 @@
 import yt_dlp
 import os
 from openai import OpenAI
-import argparse
 from dotenv import load_dotenv
 from tqdm import tqdm
 import time
@@ -9,7 +8,8 @@ import subprocess
 import json
 from datetime import datetime
 import google.generativeai as genai
-import logging  # 引入 logging 模組
+import logging
+import uuid  # 用於生成任務 ID
 
 # 設定 logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,7 +19,7 @@ load_dotenv()
 
 class YouTubeSummarizer:
     # 定義模型名稱常數
-    WHISPER_MODEL = "whisper-1"
+    WHISPER_MODEL = "gpt-4o-transcribe"
     GEMINI_MODEL = 'gemini-2.5-pro-exp-03-25'
     OPENAI_FALLBACK_MODEL = "o3-mini"
     DEFAULT_OPENAI_MODEL = "o3-mini" # 新增預設 OpenAI 模型
@@ -514,16 +514,22 @@ class YouTubeSummarizer:
 
             with tqdm(total=1, desc="AI 處理") as pbar:
                 prompt = f"""
-                標題: {title}
-                描述: {description}
-                內容轉錄: {transcript}
-                
-                請提供以下格式的中文摘要:
-                1. 主要重點（列點）
-                2. 詳細摘要（2-3段）
-                3. 關鍵字（5-7個）
+                影片標題: {title}
+                影片描述: {description}
+                影片逐字稿: {transcript}
+
+                請扮演一位**研究分析師**，為**快速了解影片核心內容的讀者**，提供一份**精煉、客觀**的中文摘要，格式如下：
+
+                1.  **核心洞察 (Top 3 Insights)**：條列最重要的 3 個發現或結論。
+                2.  **精華摘要 (Concise Summary)**：撰寫一段**不超過 150 字**的摘要，總結影片最關鍵的資訊與論點。
+                3.  **主題關鍵字 (Thematic Keywords)**：提供 5 個最能捕捉影片**核心主題**的關鍵字。
+
+                **要求**：
+                *   語氣客觀、專業。
+                *   專注於資訊本身，**排除逐字稿中的口語化表達、問候或離題內容**。
+                *   摘要需邏輯清晰、重點突出。
                 """
-                
+
                 summary_content = None
                 # 根據 __init__ 的設定決定使用哪個模型
                 if self.use_gemini:
@@ -613,7 +619,120 @@ class YouTubeSummarizer:
         except Exception as e:
             logging.error(f"清理失敗: {str(e)}")
 
-def main():
+# 新增一個核心處理函數，取代 main()
+def run_summary_process(url: str, keep_audio: bool = False):
+    """
+    執行完整的 YouTube 摘要流程。
+    接收 URL，返回包含狀態和結果/錯誤的字典。
+    
+    Args:
+        url: YouTube 影片網址
+        keep_audio: 是否保留音訊檔案（預設會刪除）
+        
+    Returns:
+        包含狀態和結果/錯誤的字典
+    """
+    audio_path_to_clean = None
+    video_dirs = None
+    summarizer = None  # 初始化為 None
+    start_time = time.time()
+
+    try:
+        summarizer = YouTubeSummarizer()  # 初始化放在 try 內部
+        logging.info(f"開始處理 URL: {url}")
+
+        # --- 下載 ---
+        logging.info("\n--- 開始階段 1: 下載影片 ---")
+        download_result = summarizer.download_video(url)
+        if not download_result or not all(download_result):
+            logging.error("影片下載或初始處理失敗。")
+            return {"status": "error", "message": "影片下載或初始處理失敗。"}
+        audio_path, title, description, video_dirs = download_result
+        audio_path_to_clean = audio_path
+        logging.info("--- 階段 1 完成 ---")
+
+        # --- 轉錄 ---
+        logging.info("\n--- 開始階段 2: 音訊轉錄 ---")
+        transcript = summarizer.transcribe_and_save(audio_path, video_dirs)
+        if transcript is None:
+            logging.error("音訊轉錄失敗。")
+            # 嘗試清理
+            if not keep_audio and audio_path_to_clean and os.path.exists(audio_path_to_clean):
+                summarizer.cleanup(audio_path_to_clean)
+            return {"status": "error", "message": "音訊轉錄失敗。"}
+        logging.info("--- 階段 2 完成 ---")
+
+        # --- 摘要 ---
+        logging.info("\n--- 開始階段 3: 生成摘要 ---")
+        summary = summarizer.generate_and_save_summary(
+            transcript, title, description, video_dirs
+        )
+        if summary is None:
+            logging.warning("生成摘要失敗。")
+            # 流程繼續，但標記摘要失敗
+            final_summary = "摘要生成失敗。"
+        else:
+            final_summary = summary
+        logging.info("--- 階段 3 完成 ---")
+
+        # --- 清理 (如果需要) ---
+        if not keep_audio:
+            logging.info("\n--- 開始階段 4: 清理暫存檔案 ---")
+            if audio_path_to_clean:
+                summarizer.cleanup(audio_path_to_clean)
+            logging.info("--- 階段 4 完成 ---")
+        else:
+            logging.info("\n--- 階段 4: 清理已跳過 (使用者要求保留音訊) ---")
+            if audio_path_to_clean:
+                logging.info(f"音訊檔案已保留: {audio_path_to_clean}")
+
+        # 計算總處理時間
+        end_time = time.time()
+        total_time = end_time - start_time
+
+        # 返回結果
+        result = {
+            "status": "complete",
+            "title": title,
+            "summary": final_summary,
+            "transcript": transcript,  # 可以選擇是否返回轉錄稿
+            "processing_time": total_time,
+            "video_id": video_dirs["audio"].split("/")[-1] if video_dirs else None
+        }
+        
+        # 添加儲存路徑（僅供參考）
+        if video_dirs:
+            paths = {}
+            for key, path in video_dirs.items():
+                if os.path.exists(path):
+                    paths[key] = path
+            result["paths"] = paths
+            
+        return result
+
+    except Exception as e:
+        logging.critical(f"處理 URL {url} 時發生未預期錯誤: {e}", exc_info=True)
+        # 嘗試清理（如果 summarizer 已初始化）
+        if not keep_audio and summarizer and audio_path_to_clean and os.path.exists(audio_path_to_clean):
+            try:
+                summarizer.cleanup(audio_path_to_clean)
+            except Exception as cleanup_e:
+                logging.error(f"錯誤處理中的清理失敗: {cleanup_e}")
+        
+        # 計算總處理時間（即使失敗）
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        return {
+            "status": "error", 
+            "message": f"處理過程中發生未預期錯誤: {str(e)}",
+            "processing_time": total_time
+        }
+
+# 如果直接執行此腳本，則使用命令列模式（為了向後兼容）
+if __name__ == "__main__":
+    import argparse
+    
     parser = argparse.ArgumentParser(description='YouTube 影片摘要生成器')
     parser.add_argument('url', help='YouTube 影片網址')
     parser.add_argument('--keep-audio', action='store_true', 
@@ -625,111 +744,14 @@ def main():
 
     # 根據參數設定日誌級別
     logging.getLogger().setLevel(args.log_level.upper())
-
-    audio_path_to_clean = None # 初始化用於清理的路徑
-    video_dirs = None # 初始化影片目錄
-
-    try:
-        summarizer = YouTubeSummarizer()
-        
-        logging.info("\n=== YouTube 影片摘要生成器 ===")
-        logging.info(f"處理網址: {args.url}")
-        
-        start_time = time.time()
-        
-        # --- 階段 1: 下載與處理影片 ---
-        logging.info("\n--- 開始階段 1: 下載影片 ---")
-        # download_video 應返回 (audio_path, title, description, video_dirs) 或 (None, None, None, None)
-        download_result = summarizer.download_video(args.url)
-        if not download_result or not all(download_result):
-            logging.error("影片下載或初始處理失敗，無法繼續。請檢查上面的日誌獲取詳細資訊。")
-            return # 終止程式
-        
-        audio_path, title, description, video_dirs = download_result
-        audio_path_to_clean = audio_path # 記錄下需要清理的原始音訊路徑
-        logging.info("--- 階段 1 完成 ---")
-
-        # --- 階段 2: 音訊轉錄 ---
-        logging.info("\n--- 開始階段 2: 音訊轉錄 ---")
-        # transcribe_and_save 應返回 transcript 或 None
-        transcript = summarizer.transcribe_and_save(audio_path, video_dirs)
-        if transcript is None: # 明確檢查 None
-            logging.error("音訊轉錄失敗，無法繼續。請檢查上面的日誌獲取詳細資訊。")
-            # 即使轉錄失敗，也可能需要清理音訊檔
-            if not args.keep_audio and audio_path_to_clean and os.path.exists(audio_path_to_clean):
-                 summarizer.cleanup(audio_path_to_clean) # 嘗試清理
-            return # 終止程式
-        logging.info("--- 階段 2 完成 ---")
-
-        # --- 階段 3: 生成摘要 ---
-        logging.info("\n--- 開始階段 3: 生成摘要 ---")
-        # generate_and_save_summary 應返回 summary 或 None
-        summary = summarizer.generate_and_save_summary(
-            transcript, title, description, video_dirs
-        )
-        if summary is None: # 明確檢查 None
-            logging.warning("生成摘要失敗。摘要文件將不會被創建。請檢查上面的日誌。")
-            # 注意：即使摘要失敗，前面的步驟可能是成功的，所以不一定需要終止
-        else:
-            logging.info("\n=== 摘要結果 ===")
-            print(summary) # 摘要成功才打印到控制台
-        logging.info("--- 階段 3 完成 ---")
-
-        # --- 階段 4: 清理 ---
-        # 只有在使用者未指定 --keep-audio 時才清理
-        if not args.keep_audio:
-             logging.info("\n--- 開始階段 4: 清理暫存檔案 ---")
-             if audio_path_to_clean:
-                 summarizer.cleanup(audio_path_to_clean)
-             else:
-                  logging.warning("沒有有效的音訊路徑可供清理。")
-             logging.info("--- 階段 4 完成 ---")
-        else:
-            logging.info("\n--- 階段 4: 清理已跳過 (使用者要求保留音訊) ---")
-            if audio_path_to_clean:
-                 logging.info(f"音訊檔案已保留: {audio_path_to_clean}")
-        
-        # 顯示總處理時間
-        end_time = time.time()
-        total_time = end_time - start_time
-        logging.info(f"\n總處理時間: {total_time:.2f} 秒")
-        
-        # 顯示檔案位置
-        if video_dirs:
-            logging.info("\n檔案儲存位置:")
-            if os.path.exists(video_dirs.get('audio', '')):
-                 logging.info(f"音訊目錄: {video_dirs['audio']}")
-            if os.path.exists(video_dirs.get('transcript', '')):
-                 logging.info(f"轉錄目錄: {video_dirs['transcript']}")
-            if os.path.exists(video_dirs.get('summary', '')):
-                 logging.info(f"摘要目錄: {video_dirs['summary']}")
-            if os.path.exists(video_dirs.get('metadata', '')):
-                 logging.info(f"元數據目錄: {video_dirs['metadata']}")
-        
-    except KeyboardInterrupt:
-        logging.warning("\n程式被使用者中斷")
-    except ValueError as ve:
-         # 捕獲 __init__ 中可能的 API 金鑰錯誤
-         logging.critical(f"初始化錯誤: {ve}") 
-    except Exception as e:
-        logging.critical(f"\n程式執行過程中發生未預期的嚴重錯誤: {e}", exc_info=True) # 記錄 traceback
-    finally:
-         # 無論成功或失敗，如果需要清理音訊檔且未保留
-         if not args.keep_audio and audio_path_to_clean and os.path.exists(audio_path_to_clean):
-             logging.info("執行最終清理...")
-             # 確保 summarizer 實例存在才調用 cleanup
-             if 'summarizer' in locals() and summarizer is not None:
-                 try:
-                      summarizer.cleanup(audio_path_to_clean)
-                 except Exception as cleanup_e:
-                      logging.error(f"最終清理過程中出錯: {cleanup_e}")
-             else:
-                  # 如果 summarizer 初始化失敗，嘗試直接刪除
-                  try:
-                       os.remove(audio_path_to_clean)
-                       logging.info(f"直接刪除音訊檔案: {audio_path_to_clean}")
-                  except OSError as direct_remove_e:
-                       logging.error(f"最終嘗試直接刪除音訊檔案失敗: {direct_remove_e}")
-
-if __name__ == "__main__":
-    main() 
+    
+    # 呼叫新的處理函數
+    result = run_summary_process(args.url, args.keep_audio)
+    
+    # 顯示結果 (如果成功)
+    if result["status"] == "complete":
+        print("\n=== 摘要結果 ===")
+        print(result["summary"])
+    else:
+        print("\n=== 處理失敗 ===")
+        print(result["message"]) 
