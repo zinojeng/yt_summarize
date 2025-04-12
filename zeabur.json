@@ -1,6 +1,8 @@
 {
   "build": {
     "main": "app.py",
+    "buildCommand": "pip install -e .",
+    "installCommand": "pip install -r requirements.txt",
     "envs": [
       "OPENAI_API_KEY",
       "GOOGLE_API_KEY",
