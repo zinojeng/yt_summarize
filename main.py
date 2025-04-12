@@ -7,7 +7,22 @@ import time
 import subprocess
 import json
 from datetime import datetime
-import google.generativeai as genai
+
+# 自動安裝並導入 google 模組
+try:
+    import google.generativeai as genai
+except ImportError:
+    print("找不到 google.generativeai 模組，嘗試自動安裝...")
+    try:
+        import sys
+        for package in ["protobuf", "google-api-python-client", "google-auth", "google-generativeai==0.3.1"]:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", package])
+        import google.generativeai as genai
+        print("成功安裝並導入 google.generativeai!")
+    except Exception as e:
+        print(f"無法安裝 google.generativeai: {e}")
+        # 繼續執行，但標記不使用 Gemini 功能
+
 import logging
 import uuid  # 用於生成任務 ID
 
