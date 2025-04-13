@@ -1,3 +1,4 @@
+import sys
 from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -9,10 +10,24 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
 
-# 導入我們的 YouTube 摘要處理函數
-from yt_summarizer import run_summary_process
+# 添加診斷輸出
+print("正在啟動程序...")
+print(f"Python 版本: {sys.version}")
+print(f"當前工作目錄: {os.getcwd()}")
+
+try:
+    # 導入我們的 YouTube 摘要處理函數
+    print("嘗試導入 YouTubeSummarizer...")
+    from yt_summarizer import run_summary_process
+    print("成功導入 YouTubeSummarizer")
+except Exception as e:
+    print(f"導入 YouTubeSummarizer 失敗: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 
 # 創建應用
+print("創建 FastAPI 應用...")
 app = FastAPI(title="YouTube 影片摘要服務")
 
 # 添加 CORS 配置
@@ -27,6 +42,7 @@ app.add_middleware(
 # 創建用於存儲模板的目錄
 templates_dir = os.path.join(os.path.dirname(__file__), "templates")
 os.makedirs(templates_dir, exist_ok=True)
+print(f"模板目錄: {templates_dir}")
 
 # 設置模板
 templates = Jinja2Templates(directory=templates_dir)
@@ -705,8 +721,16 @@ async def home(request: Request):
 
 # 啟動服務器 (如果直接運行此檔案)
 if __name__ == "__main__":
-    # 確保模板目錄存在
-    if not os.path.exists(templates_dir):
-        os.makedirs(templates_dir)
-        
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True) 
+    try:
+        # 確保模板目錄存在
+        if not os.path.exists(templates_dir):
+            os.makedirs(templates_dir)
+            
+        print("正在啟動 uvicorn 服務器...")
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, log_level="debug")
+        print("服務器已關閉")
+    except Exception as e:
+        print(f"啟動服務器失敗: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1) 
