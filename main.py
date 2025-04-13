@@ -32,7 +32,7 @@ except Exception as e:
 
 # 創建應用
 print("創建 FastAPI 應用...")
-app = FastAPI(title="YouTube 影片摘要服務")
+app = FastAPI(title="YouTube 影片摘要服務", lifespan=lifespan)
 
 # 添加 CORS 配置
 app.add_middleware(
@@ -106,21 +106,19 @@ def process_summary_task(task_id: str, url: str, keep_audio: bool, openai_api_ke
             update_task_progress(task_id, stage, percentage, message)
 
         # 從環境變數讀取 Cookie 檔案路徑
-        cookie_file_path = os.environ.get("COOKIE_FILE_PATH")
-        if cookie_file_path and not os.path.exists(cookie_file_path):
-            logging.warning(f"環境變數 COOKIE_FILE_PATH 指向的文件不存在: {cookie_file_path}")
-            cookie_file_path = None # 如果檔案不存在，則設為 None
+        cookie_file_path = "/app/cookies.txt"
+        if not os.path.exists(cookie_file_path):
+            logging.info(f"Cookie 文件 {cookie_file_path} 不存在 (可能是因為未設定 COOKIE_FILE_CONTENT 環境變數)")
+            cookie_file_path = None
         elif cookie_file_path:
-            logging.info(f"從環境變數讀取到 Cookie 路徑: {cookie_file_path}")
-        else:
-            logging.info("未在環境變數中找到 COOKIE_FILE_PATH")
+            logging.info(f"將使用 Cookie 文件: {cookie_file_path}")
 
         # 執行摘要處理，傳入進度回調和 Cookie 路徑
         result = run_summary_process(
             url=url, 
             keep_audio=keep_audio, 
             progress_callback=progress_callback,
-            cookie_file_path=cookie_file_path, # 傳遞 Cookie 路徑
+            cookie_file_path=cookie_file_path,
             openai_api_key=openai_api_key,
             google_api_key=google_api_key
         )
@@ -821,4 +819,28 @@ async def download_summary(task_id: str):
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"'
         }
-    ) 
+    )
+
+# --- 新增：啟動時處理 Cookie 文件 --- 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 在應用程式啟動時執行
+    cookie_content = os.environ.get("COOKIE_FILE_CONTENT")
+    cookie_file_path = "/app/cookies.txt"  # 在容器內的路徑
+    if cookie_content:
+        try:
+            with open(cookie_file_path, "w", encoding="utf-8") as f:
+                f.write(cookie_content)
+            logging.info(f"已成功從環境變數 COOKIE_FILE_CONTENT 寫入 {cookie_file_path}")
+        except Exception as e:
+            logging.error(f"從環境變數寫入 Cookie 文件失敗: {e}")
+    else:
+        logging.info("未找到環境變數 COOKIE_FILE_CONTENT，跳過寫入 Cookie 文件")
+    yield
+    # 在應用程式關閉時執行 (如果需要清理)
+    if os.path.exists(cookie_file_path):
+        try:
+            os.remove(cookie_file_path)
+            logging.info(f"已清理 Cookie 文件: {cookie_file_path}")
+        except Exception as e:
+            logging.error(f"清理 Cookie 文件失敗: {e}") 
