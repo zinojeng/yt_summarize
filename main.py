@@ -10,6 +10,9 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
 import logging
+import uuid
+import asyncio # Added for timeout
+from contextlib import asynccontextmanager # Added for lifespan
 
 # 添加診斷輸出
 print("正在啟動程序...")
@@ -62,37 +65,30 @@ class SummaryRequest(BaseModel):
 # API 端點: 提交摘要請求
 @app.post("/api/summary")
 async def create_summary(request: SummaryRequest, background_tasks: BackgroundTasks):
+    # Log the received request data
+    logging.info(f"Received summary request: URL='{request.url}', KeepAudio={request.keep_audio}")
+    # logging.info(f"Keys provided: OpenAI={bool(request.openai_key)}, Google={bool(request.google_key)}")
+
+    # Basic URL validation (can be improved with regex or Pydantic's HttpUrl)
+    if not request.url or not request.url.strip().startswith(("http://", "https://")):
+        logging.error(f"Invalid URL format received: '{request.url}'")
+        raise HTTPException(status_code=400, detail="提供的 URL 格式無效或為空。請檢查是否以 http:// 或 https:// 開頭。")
+
     task_id = f"{int(time.time())}-{len(tasks) + 1}"
-    
-    # 初始化任務狀態
     tasks[task_id] = {
         "id": task_id,
         "status": "pending",
-        "created_at": datetime.now().isoformat(),
-        "url": str(request.url),
-        "keep_audio": request.keep_audio,
+        "progress": {"stage": "隊列中", "percentage": 0, "message": "等待處理..."},
         "result": None,
-        "progress": {
-            "stage": "初始化",
-            "percentage": 0,
-            "message": "正在準備任務..."
-        }
+        "start_time": time.time(),
+        "is_cancelled": False
     }
-    
-    # 暫時設置 API 金鑰（如果提供）
-    if request.openai_api_key:
-        os.environ["OPENAI_API_KEY"] = request.openai_api_key
-    if request.google_api_key:
-        os.environ["GOOGLE_API_KEY"] = request.google_api_key
-    
-    # 在後台執行處理任務
-    background_tasks.add_task(process_summary_task, task_id, str(request.url), request.keep_audio)
-    
-    return {
-        "task_id": task_id, 
-        "status": "pending",
-        "message": "摘要任務已創建並正在後台處理中"
-    }
+    # Pass API keys to the background task
+    background_tasks.add_task(process_summary_task, task_id, request.url, 
+                              request.keep_audio, # Corrected order
+                              request.openai_api_key, request.google_api_key)
+    logging.info(f"Task {task_id} created for URL: {request.url}")
+    return {"task_id": task_id}
 
 # 更新任務進度的函數
 def update_task_progress(task_id: str, stage: str, percentage: int, message: str):
@@ -104,7 +100,7 @@ def update_task_progress(task_id: str, stage: str, percentage: int, message: str
         }
 
 # 背景處理任務
-def process_summary_task(task_id: str, url: str, keep_audio: bool):
+def process_summary_task(task_id: str, url: str, keep_audio: bool, openai_api_key: Optional[str], google_api_key: Optional[str]):
     try:
         # 更新任務狀態為處理中
         tasks[task_id]["status"] = "processing"
@@ -129,7 +125,9 @@ def process_summary_task(task_id: str, url: str, keep_audio: bool):
             url=url, 
             keep_audio=keep_audio, 
             progress_callback=progress_callback,
-            cookie_file_path=cookie_file_path # 傳遞 Cookie 路徑
+            cookie_file_path=cookie_file_path, # 傳遞 Cookie 路徑
+            openai_api_key=openai_api_key,
+            google_api_key=google_api_key
         )
         
         # 更新任務結果
