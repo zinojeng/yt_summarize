@@ -14,6 +14,31 @@ import uuid
 import asyncio # Added for timeout
 from contextlib import asynccontextmanager # Added for lifespan
 
+# --- 新增：啟動時處理 Cookie 文件 (移到 app 創建之前) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 在應用程式啟動時執行
+    cookie_content = os.environ.get("COOKIE_FILE_CONTENT")
+    cookie_file_path = "/app/cookies.txt"  # 在容器內的路徑
+    if cookie_content:
+        try:
+            with open(cookie_file_path, "w", encoding="utf-8") as f:
+                f.write(cookie_content)
+            logging.info(f"已成功從環境變數 COOKIE_FILE_CONTENT 寫入 {cookie_file_path}")
+        except Exception as e:
+            logging.error(f"從環境變數寫入 Cookie 文件失敗: {e}")
+    else:
+        logging.info("未找到環境變數 COOKIE_FILE_CONTENT，跳過寫入 Cookie 文件")
+    yield
+    # 在應用程式關閉時執行 (如果需要清理)
+    if os.path.exists(cookie_file_path):
+        try:
+            os.remove(cookie_file_path)
+            logging.info(f"已清理 Cookie 文件: {cookie_file_path}")
+        except Exception as e:
+            logging.error(f"清理 Cookie 文件失敗: {e}")
+# --- 修改結束 ---
+
 # 添加診斷輸出
 print("正在啟動程序...")
 print(f"Python 版本: {sys.version}")
@@ -729,11 +754,12 @@ async def home(request: Request):
                             document.getElementById('results').style.display = 'block';
                         } else if (taskData.status === 'error') {
                             clearInterval(pollInterval);
-                            alert('處理失敗: ' + (taskData.result?.error || '未知錯誤'));
+                            alert('處理失敗: ' + (taskData.result?.error || taskData.result?.message || '未知錯誤')); // More robust error message display
                             document.getElementById('loading').style.display = 'none';
                         }
                     } catch (error) {
                         console.error('輪詢任務狀態失敗:', error);
+                        // Consider stopping polling after too many errors
                     }
                 }, 3000); // 每3秒檢查一次
             }
@@ -819,28 +845,4 @@ async def download_summary(task_id: str):
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"'
         }
-    )
-
-# --- 新增：啟動時處理 Cookie 文件 --- 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 在應用程式啟動時執行
-    cookie_content = os.environ.get("COOKIE_FILE_CONTENT")
-    cookie_file_path = "/app/cookies.txt"  # 在容器內的路徑
-    if cookie_content:
-        try:
-            with open(cookie_file_path, "w", encoding="utf-8") as f:
-                f.write(cookie_content)
-            logging.info(f"已成功從環境變數 COOKIE_FILE_CONTENT 寫入 {cookie_file_path}")
-        except Exception as e:
-            logging.error(f"從環境變數寫入 Cookie 文件失敗: {e}")
-    else:
-        logging.info("未找到環境變數 COOKIE_FILE_CONTENT，跳過寫入 Cookie 文件")
-    yield
-    # 在應用程式關閉時執行 (如果需要清理)
-    if os.path.exists(cookie_file_path):
-        try:
-            os.remove(cookie_file_path)
-            logging.info(f"已清理 Cookie 文件: {cookie_file_path}")
-        except Exception as e:
-            logging.error(f"清理 Cookie 文件失敗: {e}") 
+    ) 
