@@ -19,7 +19,7 @@
     # --- 可選：複製 Cookie 文件 ---
     # 如果您決定使用 Cookie，請確保在專案根目錄有名為 cookies.txt 的文件
     # 然後取消下面這行的註解
-    # COPY cookies.txt .
+    COPY cookies.txt .
 
     # 複製您專案中的所有其他檔案到工作目錄
     COPY . .

@@ -45,4 +45,7 @@ youtube_summary/
 
 # OS specific
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Cookies file (contains sensitive login info)
+cookies.txt 
