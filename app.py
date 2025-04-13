@@ -10,7 +10,7 @@ from datetime import datetime
 from pydantic import BaseModel, HttpUrl
 
 # 導入我們的 YouTube 摘要處理函數
-from main import run_summary_process
+from yt_summarizer import run_summary_process
 
 # 創建應用
 app = FastAPI(title="YouTube 影片摘要服務")
