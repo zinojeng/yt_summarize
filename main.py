@@ -120,17 +120,36 @@ async def home(request: Request):
         <title>YouTube 影片摘要服務</title>
         <style>
             body {
-                font-family: Arial, sans-serif;
-                max-width: 800px;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                max-width: 1000px;
                 margin: 0 auto;
                 padding: 20px;
                 line-height: 1.6;
+                color: #333;
+                background-color: #f9f9f9;
             }
             h1 {
                 color: #c4302b;
                 text-align: center;
+                margin-bottom: 10px;
+            }
+            h2 {
+                color: #333;
+                border-bottom: 2px solid #ddd;
+                padding-bottom: 10px;
+                margin-top: 30px;
+            }
+            .subtitle {
+                text-align: center;
+                color: #666;
+                margin-top: 0;
+                margin-bottom: 30px;
             }
             .container {
+                background: white;
+                border-radius: 8px;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+                padding: 30px;
                 margin-top: 20px;
             }
             form {
@@ -139,40 +158,49 @@ async def home(request: Request):
                 flex-direction: column;
             }
             input[type="url"], input[type="text"], input[type="password"] {
-                padding: 10px;
-                margin-bottom: 10px;
+                padding: 12px;
+                margin-bottom: 15px;
                 border: 1px solid #ddd;
                 border-radius: 4px;
+                font-size: 16px;
             }
             button {
-                padding: 10px 15px;
+                padding: 12px 15px;
                 background-color: #c4302b;
                 color: white;
                 border: none;
                 border-radius: 4px;
                 cursor: pointer;
+                font-size: 16px;
+                font-weight: 600;
+                transition: background-color 0.3s;
             }
             button:hover {
                 background-color: #a52724;
             }
             #results {
                 margin-top: 20px;
-                border: 1px solid #ddd;
-                padding: 15px;
+                border: 1px solid #eee;
+                padding: 20px;
                 border-radius: 4px;
                 min-height: 100px;
                 display: none;
+                background-color: #fff;
             }
             .summary {
                 white-space: pre-wrap;
                 background-color: #f9f9f9;
-                padding: 10px;
+                padding: 15px;
                 border-radius: 4px;
                 margin-top: 10px;
+                line-height: 1.8;
             }
             .loading {
                 text-align: center;
                 margin: 20px 0;
+                padding: 20px;
+                background-color: #f5f5f5;
+                border-radius: 5px;
             }
             .switch {
                 position: relative;
@@ -217,42 +245,127 @@ async def home(request: Request):
             .option-container {
                 display: flex;
                 align-items: center;
-                margin-bottom: 10px;
+                margin-bottom: 15px;
             }
             .option-label {
                 margin-left: 10px;
+                font-size: 16px;
             }
             .api-settings {
                 margin-top: 20px;
-                padding: 15px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
+                padding: 20px;
+                border: 1px solid #eee;
+                border-radius: 8px;
                 background-color: #f9f9f9;
             }
             .api-settings h3 {
                 margin-top: 0;
                 color: #333;
+                margin-bottom: 15px;
             }
             .api-note {
                 font-size: 0.9em;
                 color: #666;
                 margin-top: 5px;
             }
+            .feature-section {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 20px;
+                margin: 30px 0;
+            }
+            .feature-card {
+                flex: 1;
+                min-width: 250px;
+                background: white;
+                border-radius: 8px;
+                padding: 20px;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+            }
+            .feature-card h3 {
+                color: #c4302b;
+                margin-top: 0;
+            }
+            .faq-item {
+                margin-bottom: 20px;
+            }
+            .faq-question {
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 8px;
+            }
+            .faq-answer {
+                color: #555;
+                line-height: 1.6;
+            }
+            .footer {
+                text-align: center;
+                margin-top: 50px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+                color: #777;
+            }
+            .loading-animation {
+                display: inline-block;
+                position: relative;
+                width: 80px;
+                height: 80px;
+            }
+            .loading-animation div {
+                position: absolute;
+                top: 33px;
+                width: 13px;
+                height: 13px;
+                border-radius: 50%;
+                background: #c4302b;
+                animation-timing-function: cubic-bezier(0, 1, 1, 0);
+            }
+            .loading-animation div:nth-child(1) {
+                left: 8px;
+                animation: loading1 0.6s infinite;
+            }
+            .loading-animation div:nth-child(2) {
+                left: 8px;
+                animation: loading2 0.6s infinite;
+            }
+            .loading-animation div:nth-child(3) {
+                left: 32px;
+                animation: loading2 0.6s infinite;
+            }
+            .loading-animation div:nth-child(4) {
+                left: 56px;
+                animation: loading3 0.6s infinite;
+            }
+            @keyframes loading1 {
+                0% { transform: scale(0); }
+                100% { transform: scale(1); }
+            }
+            @keyframes loading2 {
+                0% { transform: translate(0, 0); }
+                100% { transform: translate(24px, 0); }
+            }
+            @keyframes loading3 {
+                0% { transform: scale(1); }
+                100% { transform: scale(0); }
+            }
         </style>
     </head>
     <body>
         <h1>YouTube 影片摘要服務</h1>
+        <p class="subtitle">幫助您快速獲取影片核心內容，節省寶貴時間</p>
+        
         <div class="container">
+            <h2>開始使用</h2>
             <form id="summaryForm">
                 <input type="url" id="videoUrl" name="url" placeholder="輸入 YouTube 影片網址" required>
                 
                 <div class="api-settings">
                     <h3>API 金鑰設定</h3>
                     <input type="password" id="openaiKey" name="openai_api_key" placeholder="OpenAI API 金鑰 (必填)">
-                    <p class="api-note">需要 OpenAI API 金鑰才能執行摘要生成。</p>
+                    <p class="api-note">需要 OpenAI API 金鑰才能執行摘要生成。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
                     
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
-                    <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。如果未提供，將只使用 OpenAI。</p>
+                    <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
                 </div>
                 
                 <div class="option-container">
@@ -266,7 +379,9 @@ async def home(request: Request):
             </form>
             
             <div id="loading" class="loading" style="display: none;">
-                <p>處理中，請稍候... 這可能需要幾分鐘時間</p>
+                <div class="loading-animation"><div></div><div></div><div></div><div></div></div>
+                <p>正在處理中，請稍候...</p>
+                <p>影片下載、轉錄和摘要生成可能需要幾分鐘時間，取決於影片長度</p>
             </div>
             
             <div id="results">
@@ -277,6 +392,56 @@ async def home(request: Request):
                 <h3>摘要內容</h3>
                 <div id="summary" class="summary"></div>
             </div>
+        </div>
+
+        <div class="container">
+            <h2>功能介紹</h2>
+            <div class="feature-section">
+                <div class="feature-card">
+                    <h3>影片下載</h3>
+                    <p>自動下載 YouTube 影片並提取音訊內容，支援各種解析度和格式。</p>
+                </div>
+                <div class="feature-card">
+                    <h3>語音轉文字</h3>
+                    <p>使用先進的 AI 模型將影片聲音轉換為文字，支援多種語言。</p>
+                </div>
+                <div class="feature-card">
+                    <h3>智能摘要</h3>
+                    <p>通過 GPT-4 或 Gemini 分析影片內容，生成重點摘要、關鍵洞察和主題標籤。</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <h2>常見問題</h2>
+            <div class="faq-item">
+                <div class="faq-question">這個服務如何保護我的 API 金鑰？</div>
+                <div class="faq-answer">
+                    您的 API 金鑰僅在處理請求時暫時使用，不會被永久儲存在伺服器上。每次提交新請求時都需要重新輸入，確保安全性。
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question">支援哪些類型的 YouTube 影片？</div>
+                <div class="faq-answer">
+                    支援大多數公開的 YouTube 影片，包括教學、演講、播客等。不支援私人影片或需要會員訂閱的內容。長度過長的影片可能會被分段處理。
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question">為什麼我需要提供自己的 API 金鑰？</div>
+                <div class="faq-answer">
+                    使用自己的 API 金鑰可以確保您的請求優先處理，並且避免與其他用戶共享配額限制。這也讓您可以完全控制成本和使用情況。
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question">處理過程需要多長時間？</div>
+                <div class="faq-answer">
+                    處理時間取決於影片長度和伺服器負載。短片通常在 1-3 分鐘內完成，長片可能需要 5-10 分鐘或更長時間。
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>© 2024 YouTube 影片摘要服務 | 本工具僅供學習和研究使用</p>
         </div>
         
         <script>
@@ -350,7 +515,8 @@ async def home(request: Request):
             function displayResults(taskData) {
                 const result = taskData.result;
                 
-                document.getElementById('taskInfo').textContent = `任務 ID: ${taskData.id}, 處理時間: ${formatTime(result.processing_time)}`;
+                document.getElementById('taskInfo').textContent = 
+                    `任務 ID: ${taskData.id}, 處理時間: ${formatTime(result.processing_time)}`;
                 document.getElementById('title').textContent = result.title || '無標題';
                 document.getElementById('summary').textContent = result.summary || '無摘要內容';
             }
