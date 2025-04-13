@@ -184,6 +184,7 @@ class YouTubeSummarizer:
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
+            logging.info(f"Metadata 已儲存至: {file_path}")
         except IOError as e:
             logging.error(f"儲存 metadata 失敗 ({file_path}): {e}")
 
@@ -329,30 +330,43 @@ class YouTubeSummarizer:
                         logging.warning(f"在最終錯誤處理中清理分段檔案 {seg_path} 時出錯: {e_rem}")
             return None
 
-    def download_video(self, url: str, output_path: str = None) -> Dict[str, Any]:
+    def download_video(self, url: str) -> Dict[str, Any]:
         """
-        下載 YouTube 影片並轉換為音訊
+        下載 YouTube 影片並轉換為音訊，使用 video_id 命名
         
         參數:
             url (str): YouTube 影片網址
-            output_path (str): 輸出路徑，如果未指定則使用預設音訊目錄
             
         返回:
             Dict: 包含下載結果的字典
         """
         try:
-            # 更新進度
             self.progress_callback("下載", 5, "正在提取影片資訊...")
             
-            # 如果未指定輸出路徑，使用預設
-            if not output_path:
-                # 創建時間戳目錄，避免文件衝突
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                output_dir = os.path.join(self.directories['audio'], timestamp)
-                os.makedirs(output_dir, exist_ok=True)
-                output_path = os.path.join(output_dir, '%(title)s.%(ext)s')
-            
-            # 設置下載選項
+            # --- 先提取資訊，獲取 video_id --- 
+            logging.info(f"正在提取影片資訊: {url}")
+            with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'force_generic_extractor': True}) as ydl_info:
+                info = ydl_info.extract_info(url, download=False)
+                if not info or not info.get('id'):
+                    raise ValueError(f"無法從 {url} 提取 video_id")
+                video_id = info['id']
+                video_title = info.get('title', 'unknown_title') # 仍然獲取標題供後續使用
+                logging.info(f"成功提取 Video ID: {video_id}, Title: {video_title}")
+
+            # --- 使用 video_id 構建路徑 --- 
+            output_dir = os.path.join(self.directories['audio'], video_id)
+            os.makedirs(output_dir, exist_ok=True)
+            # 輸出模板使用 video_id 作為主檔名
+            output_path_template = os.path.join(output_dir, f'{video_id}.%(ext)s')
+            # 最終的 mp3 檔案路徑
+            audio_path = os.path.join(output_dir, f'{video_id}.mp3')
+            # Metadata 檔案路徑
+            metadata_path = os.path.join(self.directories['metadata'], f'{video_id}_info.json')
+
+            logging.info(f"音訊將儲存至: {audio_path}")
+            logging.info(f"Metadata 將儲存至: {metadata_path}")
+
+            # --- 設置包含路徑的下載選項 --- 
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'postprocessors': [{
@@ -360,51 +374,39 @@ class YouTubeSummarizer:
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'outtmpl': output_path,
+                'outtmpl': output_path_template, # 使用基於 video_id 的模板
                 'progress_hooks': [self.download_progress_hook],
                 'quiet': False,
                 'no_warnings': False,
-                # 添加 User Agent 模仿瀏覽器
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
             }
 
-            # 如果初始化時提供了有效的 Cookie 路徑，則添加到選項中
             if self.cookie_file_path and os.path.exists(self.cookie_file_path):
                 ydl_opts['cookiefile'] = self.cookie_file_path
-            elif self.cookie_file_path: # 如果提供了路徑但檔案不在，再次警告
+            elif self.cookie_file_path:
                 logging.warning(f"下載時 Cookie 檔案 {self.cookie_file_path} 不存在，將不使用 Cookie。")
-            
-            # 下載視頻
-            logging.info(f"使用 yt-dlp 選項: {ydl_opts}") # 打印選項以供調試
+
+            # --- 執行下載 --- 
+            self.progress_callback("下載", 10, f"準備下載 Video ID: {video_id}...")
+            logging.info(f"開始使用 yt-dlp 下載並轉換音訊 (選項: {ydl_opts})")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-            # 確保 info 包含完整資訊
-            if not info:
-                raise ValueError(f"無法獲取影片資訊: {url}")
-                
-            video_title = info.get('title', 'unknown_title')
-            video_id = info.get('id', 'unknown_id')
-            
-            # 生成完整的音訊檔路徑
-            if '%(title)s' in output_path:
-                # 根據模板獲取實際文件路徑
-                audio_path = output_path.replace('%(title)s', video_title).replace('%(ext)s', 'mp3')
-            else:
-                # 直接使用輸出路徑
-                audio_path = f"{output_path}.mp3"
-                
-            # 更新進度
+                # 再次提取完整資訊並觸發下載
+                full_info = ydl.extract_info(url, download=True) 
+                # 這裡的 full_info 可能比第一次獲取的更完整，但我們主要用它來觸發下載
+                # 確認下載的檔案確實存在
+                if not os.path.exists(audio_path):
+                     raise IOError(f"yt-dlp 下載後未找到預期的音訊檔案: {audio_path}")
+
             self.progress_callback("下載", 30, "影片下載及音訊提取完成")
                 
-            # 保存影片元數據
-            self.save_metadata(info, os.path.join(self.directories['metadata'], 'info.json'))
+            # 使用更完整的資訊儲存 Metadata
+            self.save_metadata(full_info, metadata_path)
             
             return {
-                'title': video_title,
+                'title': video_title, # 仍然返回原始標題
                 'video_id': video_id,
-                'duration': info.get('duration'),
-                'audio_path': audio_path,
+                'duration': full_info.get('duration'),
+                'audio_path': audio_path, # 返回基於 video_id 的安全路徑
                 'status': 'success'
             }
                 
@@ -419,7 +421,7 @@ class YouTubeSummarizer:
             logging.error(f"下載影片時出錯詳情: {e}", exc_info=True)
             return {
                 'status': 'error',
-                'message': str(e)
+                'message': f"下載失敗: {str(e)}" # 提供更清晰的錯誤來源
             }
 
     def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
@@ -427,7 +429,7 @@ class YouTubeSummarizer:
         使用 OpenAI Whisper API 轉錄音訊
         
         參數:
-            audio_path (str): 音訊檔案路徑
+            audio_path (str): 音訊檔案路徑 (應基於 video_id)
             
         返回:
             Dict: 包含轉錄結果的字典
@@ -437,7 +439,20 @@ class YouTubeSummarizer:
             
             if not os.path.exists(audio_path):
                 raise FileNotFoundError(f"音訊文件不存在: {audio_path}")
-                
+
+            # --- 從安全路徑中提取 video_id 作為檔名基礎 --- 
+            try:
+                # 假設路徑是 .../audio/VIDEO_ID/VIDEO_ID.mp3
+                video_id = os.path.basename(os.path.dirname(audio_path))
+                if not video_id or video_id == 'audio': # 做一些基本檢查
+                    # 如果上層目錄不是 ID，嘗試從檔名提取
+                     video_id = os.path.basename(audio_path).rsplit('.', 1)[0]
+                logging.info(f"從音訊路徑提取用於命名的 Video ID: {video_id}")
+            except Exception:
+                # 如果提取失敗，使用時間戳作為後備
+                logging.warning(f"無法從音訊路徑 {audio_path} 提取 Video ID，將使用時間戳命名轉錄稿")
+                video_id = f"transcript_{int(time.time())}"
+
             # 檢查音訊文件大小
             file_size = os.path.getsize(audio_path)
             logging.info(f"音訊檔案大小: {file_size / (1024 * 1024):.2f} MB")
@@ -489,9 +504,9 @@ class YouTubeSummarizer:
             if not self.keep_audio and os.path.exists(audio_path):
                 os.remove(audio_path)
                 
-            # 保存轉錄結果
-            filename = os.path.basename(audio_path).rsplit('.', 1)[0]
-            transcript_path = os.path.join(self.directories['transcripts'], f"{filename}.txt")
+            # --- 保存轉錄結果，使用 video_id 命名 ---
+            transcript_path = os.path.join(self.directories['transcripts'], f"{video_id}.txt")
+            logging.info(f"轉錄稿將儲存至: {transcript_path}")
             
             with open(transcript_path, "w", encoding="utf-8") as f:
                 f.write(full_transcript)
@@ -505,10 +520,10 @@ class YouTubeSummarizer:
             }
                 
         except Exception as e:
-            logging.error(f"轉錄音訊時出錯: {e}")
+            logging.error(f"轉錄音訊時出錯: {e}", exc_info=True) # 添加 exc_info
             return {
                 'status': 'error',
-                'message': str(e)
+                'message': f"轉錄失敗: {str(e)}" # 提供更清晰的錯誤來源
             }
 
     def prepare_summary_prompt(self, transcript: str, video_title: str = "") -> str:
@@ -521,29 +536,33 @@ class YouTubeSummarizer:
             truncated_transcript = transcript[:max_transcript_chars] + "... [內容因長度限制已截斷]"
             logging.warning(f"轉錄文本過長，已截斷至 {max_transcript_chars} 字符")
         
-        # --- 更新後的提示模板 ---
+        # --- 再次優化後的提示模板 (強調緊湊) ---
         prompt_template = f"""
-        # 指令：優化與摘要記錄
+        # 指令：優化與摘要記錄 (超緊湊版)
         
-        請將以下提供的 YouTube 影片轉錄文本優化為一份結構完整、格式豐富的記錄。
-        **無論輸入文字是簡體或繁體中文，請務必將所有輸出轉換為繁體中文。**
+        請將以下提供的 YouTube 影片轉錄文本，優化為一份 **結構清晰、格式精美、排版極度緊湊** 的記錄。
+        **無論輸入文字是簡體或繁體中文，請務必將所有輸出轉換為【繁體中文】。**
 
         ## 任務要求
 
         1.  **基本要求**
-            *   將所有文字轉換為 **繁體中文**。
-            *   在保持原意的基礎上，使文字表達更為**通順流暢**且顯得**專業**。
-            *   根據提供的轉錄文本，製作一份**重點摘要**（限制在 **300 字以內**）。
+            *   轉換所有輸出為 **繁體中文**。
+            *   保持原意，使文字表達**通順流暢**且**專業**。
+            *   根據轉錄文本，製作一份精煉的**重點摘要**（限制在 **300 字以內**）。
 
-        2.  **格式要求**
-            *   使用 `---` 作為主要段落或主題的**分隔線**。
-            *   使用 `#`、`##`、`###` 等**標題層級**來區分不同的主題或區塊（例如：摘要、關鍵洞察等）。
-            *   使用 `**粗體**` 標示：
-                *   區塊標題（例如：`## **重點摘要**`）。
-                *   文本中提及的**關鍵詞**或**核心概念**。
-            *   使用 `-` 或 `*` 製作**項目清單**，支援多層縮排，用於列點說明。
-            *   適當使用 `>` 製作**引用區塊**，用於引用轉錄文本中的*重要語句*。
-            *   適當使用 `*斜體*` 強調*次要重點*或需要注意的詞語。
+        2.  **格式與排版要求** (請嚴格遵守，目標是【極度緊湊】)
+            *   **標題層級**: 使用 `#` `##` `###` 區分主題區塊 (例如：`## **重點摘要**`)。
+            *   **分隔線**: *僅在* 主要區塊之間 (例如摘要和洞察之間) 使用 `---` 分隔線，*區塊內部請勿濫用*。
+            *   **粗體**: 使用 `**粗體**` 標示: 區塊標題、**關鍵詞**。
+            *   **列表**: 使用 `-` 或 `*` 製作項目清單。
+            *   **引用**: 適當使用 `>` 引用*重要語句*。
+            *   **斜體**: 適當使用 `*斜體*` 強調*次要重點*。
+            *   **【嚴格控制空行】**: 
+                *   **標題後禁止空行**: 標題 (如 `## **重點摘要**`) 下方 **不應有** 任何空白行，直接接續內容或列表。
+                *   **列表項之間禁止空行**: 列表項 `- item1` 和 `- item2` 之間 **不應有** 空白行。
+                *   **段落之間單一空行**: 如果需要分隔段落，最多只允許 **一個** 空白行。
+                *   **分隔線 (`---`) 前後禁止額外空行**: 分隔線本身提供分隔，其前後 **不應有** 額外的空白行。
+                *   整體目標是**消除所有不必要的垂直空白**，使版面極度緊湊。
 
         --- 
         ## 待處理內容
@@ -556,17 +575,32 @@ class YouTubeSummarizer:
         ```
 
         --- 
-        ## 輸出要求
+        ## 輸出結構要求 (極度緊湊版)
 
-        請根據以上轉錄文本和格式要求，生成優化後的記錄，包含以下部分：
+        請嚴格按照以下結構和 Markdown 格式生成內容，所有內容均為**繁體中文**，並確保**極度緊湊**：
 
-        1.  `## **重點摘要**` (300字內)
-        2.  `## **關鍵洞察**` (列出 3-5 個主要觀點或發現，使用項目清單)
-        3.  `## **主題關鍵字**` (列出 5 個核心關鍵字)
-        4.  `(可選) ## **重要引述**` (使用引用區塊格式引用文本中的關鍵句子)
-        5.  `(可選) ## **詳細記錄優化**` (如果適合，可將部分原始文本按主題整理並優化)
+        ## **重點摘要**
+        (此處直接填寫 300 字以內的摘要內容，標題後無空行)
+        ---
+        ## **關鍵洞察**
+        -(洞察點 1)
+        -(洞察點 2)
+        -(洞察點 3-5)
+        ---
+        ## **主題關鍵字**
+        -關鍵字1
+        -關鍵字2
+        -關鍵字3
+        -關鍵字4
+        -關鍵字5
+        ---
+        ## **重要引述**
+        >(引用的第一句)
+        >(引用的第二句，如果相關)
+        ---
+        ## **詳細記錄優化**
+        (此部分內容緊接標題，同樣注意排版緊湊，無多餘空行)
 
-        請確保最終輸出嚴格遵守上述格式要求，並且所有內容均為**繁體中文**。
         """
         # --- 提示模板結束 ---
         return prompt_template.strip()

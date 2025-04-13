@@ -1,5 +1,5 @@
 import sys
-from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -203,6 +203,8 @@ async def home(request: Request):
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>YouTube 影片摘要服務</title>
+        <!-- 引入 Marked.js -->
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <style>
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -273,12 +275,49 @@ async def home(request: Request):
                 background-color: #fff;
             }
             .summary {
-                white-space: pre-wrap;
+                white-space: pre-wrap; /* 保留換行符 */
                 background-color: #f9f9f9;
                 padding: 15px;
                 border-radius: 4px;
                 margin-top: 10px;
                 line-height: 1.8;
+                /* Markdown 渲染的基本樣式 */
+                h1, h2, h3, h4, h5, h6 { 
+                    margin-top: 1.2em; 
+                    margin-bottom: 0.6em; 
+                    font-weight: 600; 
+                    line-height: 1.25;
+                    color: #333;
+                }
+                h2 { font-size: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
+                h3 { font-size: 1.25em; }
+                p { margin-bottom: 1em; }
+                ul, ol { padding-left: 2em; margin-bottom: 1em; }
+                li { margin-bottom: 0.4em; }
+                blockquote { 
+                    padding: 0 1em; 
+                    color: #6a737d; 
+                    border-left: 0.25em solid #dfe2e5; 
+                    margin-left: 0;
+                    margin-right: 0;
+                    margin-bottom: 1em;
+                }
+                code { 
+                    padding: 0.2em 0.4em; 
+                    margin: 0; 
+                    font-size: 85%; 
+                    background-color: rgba(27,31,35,0.05); 
+                    border-radius: 3px; 
+                    font-family: SFMono-Regular, Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+                }
+                pre > code { 
+                    padding: 1em;
+                    display: block;
+                    overflow: auto;
+                }
+                strong { font-weight: 600; }
+                em { font-style: italic; }
+                hr { border: 0; height: 0.25em; padding: 0; margin: 24px 0; background-color: #e1e4e8; }
             }
             .loading {
                 text-align: center;
@@ -460,6 +499,72 @@ async def home(request: Request):
                 font-size: 0.9em;
                 color: #666;
             }
+            #download-btn {
+                margin-top: 15px;
+                padding: 8px 15px;
+                background-color: #28a745; /* Green */
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 1em;
+            }
+            #download-btn:hover {
+                background-color: #218838;
+            }
+            /* Style for the summary container */
+            .summary-container {
+                background-color: #fff;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                margin-top: 20px;
+                border: 1px solid #e0e0e0;
+            }
+            
+            /* Styles for rendered Markdown content - Reduce vertical spacing */
+            .summary-container .summary h1,
+            .summary-container .summary h2,
+            .summary-container .summary h3,
+            .summary-container .summary h4,
+            .summary-container .summary h5,
+            .summary-container .summary h6 {
+                margin-top: 0.8em; /* Reduce top margin for headings */
+                margin-bottom: 0.3em; /* Reduce bottom margin for headings */
+            }
+            
+            .summary-container .summary p {
+                margin-top: 0.3em; /* Reduce top margin for paragraphs */
+                margin-bottom: 0.5em; /* Reduce bottom margin for paragraphs */
+            }
+            
+            .summary-container .summary ul,
+            .summary-container .summary ol {
+                margin-top: 0.3em;
+                margin-bottom: 0.5em;
+                padding-left: 20px; /* Keep padding for indentation */
+            }
+            
+            .summary-container .summary li {
+                margin-top: 0.1em;
+                margin-bottom: 0.1em; /* Tighter list item spacing */
+            }
+            
+            .summary-container .summary hr {
+                margin-top: 0.5em;
+                margin-bottom: 0.5em; /* Reduce space around horizontal rules */
+                border: 0;
+                border-top: 1px solid #eee;
+            }
+            
+            .summary-container .summary blockquote {
+                margin-top: 0.5em;
+                margin-bottom: 0.5em;
+                margin-left: 0; /* Remove default blockquote indent if desired */
+                padding-left: 1em;
+                border-left: 3px solid #ccc;
+                color: #666;
+            }
         </style>
     </head>
     <body>
@@ -512,6 +617,7 @@ async def home(request: Request):
                 <div id="title"></div>
                 <h3>摘要內容</h3>
                 <div id="summary" class="summary"></div>
+                <button id="download-btn" style="display: none;">下載摘要 (Markdown)</button>
             </div>
         </div>
 
@@ -562,7 +668,7 @@ async def home(request: Request):
         </div>
 
         <div class="footer">
-            <p>© 2024 YouTube 影片摘要服務 | 本工具僅供學習和研究使用</p>
+            <p>&copy; 2024 YouTube Summarizer. All rights reserved. Developed by Tseng Yao Hsien, Endocrinologist @ Tungs' Taichung MetroHarbor Hospital.</p>
         </div>
         
         <script>
@@ -659,7 +765,14 @@ async def home(request: Request):
                 document.getElementById('taskInfo').textContent = 
                     `任務 ID: ${taskData.id}, 處理時間: ${formatTime(result.processing_time)}`;
                 document.getElementById('title').textContent = result.title || '無標題';
-                document.getElementById('summary').textContent = result.summary || '無摘要內容';
+                // --- 使用 marked.parse() 渲染 Markdown ---
+                const summaryContent = result.summary || '無摘要內容';
+                document.getElementById('summary').innerHTML = marked.parse(summaryContent);
+                // --- 修改結束 ---
+                document.getElementById('download-btn').style.display = 'inline-block';
+                document.getElementById('download-btn').onclick = () => {
+                    window.location.href = `/api/tasks/${taskData.id}/download`;
+                };
             }
             
             function formatTime(seconds) {
@@ -686,4 +799,33 @@ if __name__ == "__main__":
         print(f"啟動服務器失敗: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1) 
+        sys.exit(1)
+
+# --- New Download Endpoint --- 
+@app.get("/api/tasks/{task_id}/download")
+async def download_summary(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="找不到任務")
+
+    if task['status'] != 'complete':
+        raise HTTPException(status_code=400, detail="任務尚未完成或處理失敗")
+        
+    summary_content = task.get('result', {}).get('summary')
+    if not summary_content:
+        raise HTTPException(status_code=404, detail="找不到摘要內容")
+
+    # 嘗試獲取影片標題作為檔名一部分，如果沒有則使用 task_id
+    video_title = task.get('result', {}).get('title', f'summary_{task_id}')
+    # 清理標題，移除不適用於檔名的字符
+    safe_title = "".join(c for c in video_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    filename = f"{safe_title}.md"
+
+    # 返回 Markdown 內容
+    return Response(
+        content=summary_content,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    ) 
