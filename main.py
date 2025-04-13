@@ -54,7 +54,8 @@ async def create_summary(request: SummaryRequest, background_tasks: BackgroundTa
         "created_at": datetime.now().isoformat(),
         "url": str(request.url),
         "keep_audio": request.keep_audio,
-        "result": None
+        "result": None,
+        "is_cancelled": False
     }
     
     # 暫時設置 API 金鑰（如果提供）
@@ -77,21 +78,72 @@ def process_summary_task(task_id: str, url: str, keep_audio: bool):
     try:
         # 更新任務狀態為處理中
         tasks[task_id]["status"] = "processing"
+        tasks[task_id]["started_at"] = datetime.now().isoformat()
+        
+        # 設置最大執行時間，避免無限循環
+        start_time = time.time()
+        max_execution_time = 600  # 10分鐘最大執行時間
         
         # 執行摘要處理
         result = run_summary_process(url, keep_audio)
         
-        # 更新任務結果
-        tasks[task_id]["status"] = result.get(
-            "status", "complete" if "summary" in result else "error"
-        )
-        tasks[task_id]["result"] = result
+        # 檢查是否已超時或被取消
+        if time.time() - start_time > max_execution_time or tasks[task_id].get("is_cancelled", False):
+            tasks[task_id]["status"] = "cancelled" if tasks[task_id].get("is_cancelled", False) else "timeout"
+            tasks[task_id]["result"] = {"message": "任務已取消或執行超時"}
+        else:
+            # 根據結果更新任務狀態
+            if isinstance(result, dict) and result.get("status") == "error":
+                # 檢查是否為YouTube常見錯誤
+                error_msg = str(result.get("message", ""))
+                
+                # 檢查是否為機器人驗證錯誤
+                if "Sign in to confirm you're not a bot" in error_msg or "bot" in error_msg.lower():
+                    tasks[task_id]["status"] = "error"
+                    tasks[task_id]["result"] = {
+                        "message": "YouTube 需要驗證您不是機器人。請嘗試以下解決方法：\n"
+                                   "1. 使用其他 YouTube 影片\n"
+                                   "2. 等待幾分鐘後再試\n"
+                                   "3. 嘗試將影片下載到本地後手動上傳"
+                    }
+                # 檢查是否為429錯誤（請求過多）
+                elif "429" in error_msg or "Too Many Requests" in error_msg:
+                    tasks[task_id]["status"] = "error"
+                    tasks[task_id]["result"] = {
+                        "message": "YouTube 伺服器報告請求過多 (HTTP 429)。請嘗試以下解決方法：\n"
+                                   "1. 等待 10-15 分鐘後再試\n"
+                                   "2. 使用不同的網路連接\n"
+                                   "3. 使用其他 YouTube 影片"
+                    }
+                # 其他常見YouTube錯誤
+                elif "Private video" in error_msg:
+                    tasks[task_id]["status"] = "error"
+                    tasks[task_id]["result"] = {
+                        "message": "無法訪問私人影片。請確保影片是公開的。"
+                    }
+                elif "This video is only available to Music Premium members" in error_msg:
+                    tasks[task_id]["status"] = "error"
+                    tasks[task_id]["result"] = {
+                        "message": "無法訪問 YouTube Premium 專屬內容。請選擇一個公開的免費影片。"
+                    }
+                elif "video is unavailable" in error_msg.lower():
+                    tasks[task_id]["status"] = "error"
+                    tasks[task_id]["result"] = {
+                        "message": "影片不可用或已被刪除。請檢查網址是否正確。"
+                    }
+                else:
+                    tasks[task_id]["status"] = "error"
+                    tasks[task_id]["result"] = result
+            else:
+                tasks[task_id]["status"] = "complete" if "summary" in result else "error"
+                tasks[task_id]["result"] = result
+        
         tasks[task_id]["completed_at"] = datetime.now().isoformat()
         
     except Exception as e:
         # 處理錯誤
         tasks[task_id]["status"] = "error"
-        tasks[task_id]["result"] = {"error": str(e)}
+        tasks[task_id]["result"] = {"message": str(e)}
         tasks[task_id]["completed_at"] = datetime.now().isoformat()
 
 # API 端點: 獲取任務狀態
@@ -106,6 +158,18 @@ async def get_task_status(task_id: str):
 @app.get("/api/tasks")
 async def list_tasks():
     return list(tasks.values())
+
+# 新增: 取消任務端點
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="任務不存在")
+    
+    if tasks[task_id]["status"] in ["pending", "processing"]:
+        tasks[task_id]["is_cancelled"] = True
+        return {"status": "success", "message": "已發送取消請求"}
+    else:
+        return {"status": "failed", "message": f"無法取消處理完成的任務 (當前狀態: {tasks[task_id]['status']})"}
 
 # Web 前端: 首頁
 @app.get("/", response_class=HTMLResponse)
@@ -348,6 +412,36 @@ async def home(request: Request):
                 0% { transform: scale(1); }
                 100% { transform: scale(0); }
             }
+            /* 添加取消按鈕樣式 */
+            .cancel-button {
+                margin-top: 20px;
+                background-color: #888;
+                font-size: 14px;
+                padding: 8px 15px;
+            }
+            .cancel-button:hover {
+                background-color: #666;
+            }
+            .error-box {
+                background-color: #fff8f8;
+                border-left: 4px solid #e74c3c;
+                padding: 15px;
+                margin: 20px 0;
+                border-radius: 4px;
+                white-space: pre-line;
+            }
+            .retry-button {
+                margin-top: 15px;
+                background-color: #3498db;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            .retry-button:hover {
+                background-color: #2980b9;
+            }
         </style>
     </head>
     <body>
@@ -382,6 +476,8 @@ async def home(request: Request):
                 <div class="loading-animation"><div></div><div></div><div></div><div></div></div>
                 <p>正在處理中，請稍候...</p>
                 <p>影片下載、轉錄和摘要生成可能需要幾分鐘時間，取決於影片長度</p>
+                <div id="progressInfo"></div>
+                <button id="cancelBtn" class="cancel-button">取消處理</button>
             </div>
             
             <div id="results">
@@ -445,6 +541,9 @@ async def home(request: Request):
         </div>
         
         <script>
+            let currentTaskId = null;
+            let pollIntervalId = null;
+            
             document.getElementById('summaryForm').addEventListener('submit', async function(e) {
                 e.preventDefault();
                 
@@ -479,6 +578,7 @@ async def home(request: Request):
                     const data = await response.json();
                     
                     if (response.ok) {
+                        currentTaskId = data.task_id;
                         pollTaskStatus(data.task_id);
                     } else {
                         alert('錯誤: ' + (data.detail || '未知錯誤'));
@@ -490,24 +590,96 @@ async def home(request: Request):
                 }
             });
             
+            // 取消按鈕事件
+            document.getElementById('cancelBtn').addEventListener('click', async function() {
+                if (!currentTaskId) return;
+                
+                try {
+                    const response = await fetch(`/api/tasks/${currentTaskId}/cancel`, {
+                        method: 'POST'
+                    });
+                    
+                    const data = await response.json();
+                    alert(data.message);
+                    
+                    if (data.status === 'success') {
+                        document.getElementById('loading').style.display = 'none';
+                    }
+                } catch (error) {
+                    console.error('取消任務失敗:', error);
+                }
+            });
+            
             async function pollTaskStatus(taskId) {
-                const pollInterval = setInterval(async () => {
+                let failureCount = 0;
+                const maxFailures = 3;
+                
+                pollIntervalId = setInterval(async () => {
                     try {
                         const response = await fetch(`/api/tasks/${taskId}`);
                         const taskData = await response.json();
                         
+                        // 重置失敗計數
+                        failureCount = 0;
+                        
+                        // 更新進度信息
+                        if (taskData.status === 'processing') {
+                            // 計算進行時間
+                            if (taskData.started_at) {
+                                const startTime = new Date(taskData.started_at);
+                                const now = new Date();
+                                const elapsedSeconds = Math.floor((now - startTime) / 1000);
+                                document.getElementById('progressInfo').innerHTML = 
+                                    `處理中，已經運行 ${formatTime(elapsedSeconds)}`;
+                            }
+                        }
+                        
                         if (taskData.status === 'complete') {
-                            clearInterval(pollInterval);
+                            clearInterval(pollIntervalId);
                             displayResults(taskData);
                             document.getElementById('loading').style.display = 'none';
                             document.getElementById('results').style.display = 'block';
-                        } else if (taskData.status === 'error') {
-                            clearInterval(pollInterval);
-                            alert('處理失敗: ' + (taskData.result?.message || '未知錯誤'));
+                        } else if (taskData.status === 'error' || 
+                                  taskData.status === 'timeout' || 
+                                  taskData.status === 'cancelled') {
+                            clearInterval(pollIntervalId);
+                            
+                            // 顯示錯誤信息
                             document.getElementById('loading').style.display = 'none';
+                            
+                            // 創建錯誤展示區
+                            const errorContainer = document.createElement('div');
+                            errorContainer.id = 'errorContainer';
+                            errorContainer.className = 'container';
+                            
+                            errorContainer.innerHTML = `
+                                <h2>處理失敗</h2>
+                                <div class="error-box">
+                                    ${taskData.result?.message || '未知錯誤'}
+                                </div>
+                                <button id="retryBtn" class="retry-button">重新嘗試</button>
+                            `;
+                            
+                            // 在表單後插入錯誤信息
+                            const formContainer = document.querySelector('.container');
+                            formContainer.parentNode.insertBefore(errorContainer, formContainer.nextSibling);
+                            
+                            // 添加重試按鈕事件
+                            document.getElementById('retryBtn').addEventListener('click', function() {
+                                document.getElementById('errorContainer').remove();
+                                document.getElementById('videoUrl').focus();
+                            });
                         }
                     } catch (error) {
                         console.error('輪詢任務狀態失敗:', error);
+                        failureCount++;
+                        
+                        // 如果連續失敗超過最大次數，停止輪詢
+                        if (failureCount >= maxFailures) {
+                            clearInterval(pollIntervalId);
+                            alert('無法獲取任務狀態，請重新載入頁面再試。');
+                            document.getElementById('loading').style.display = 'none';
+                        }
                     }
                 }, 3000); // 每3秒檢查一次
             }
