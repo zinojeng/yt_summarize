@@ -30,4 +30,5 @@
 
     # 定義容器啟動時運行的命令
     # 使用 Zeabur 提供的 $PORT 環境變數
-    CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "$PORT"]
+    # Use shell form to allow $PORT variable substitution
+    CMD uvicorn main:app --host 0.0.0.0 --port $PORT
