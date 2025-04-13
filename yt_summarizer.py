@@ -332,21 +332,25 @@ class YouTubeSummarizer:
         """
         try:
             self.progress_callback("下載", 5, "正在提取影片資訊...")
-            
-            # --- 先提取資訊，獲取 video_id --- 
-            logging.info(f"正在提取影片資訊: {url}")
+            # Convert URL object to string here
+            url_str = str(url)
+            logging.info(f"正在提取影片資訊: {url_str}")
             ydl_info_opts = {
-                'quiet': True, 
-                'extract_flat': True, 
+                'quiet': True,
+                'extract_flat': True,
                 'force_generic_extractor': True
             }
             with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_info:
-                info = ydl_info.extract_info(url, download=False)
+                # Pass the string URL to extract_info
+                info = ydl_info.extract_info(url_str, download=False)
                 if not info or not info.get('id'):
-                    raise ValueError(f"無法從 {url} 提取 video_id")
+                    raise ValueError(f"無法從 {url_str} 提取 video_id")
                 video_id = info['id']
-                video_title = info.get('title', 'unknown_title')  # 仍然獲取標題供後續使用
-                logging.info(f"成功提取 Video ID: {video_id}, Title: {video_title}")
+                video_title = info.get('title', 'unknown_title')
+                # Adjusted line length
+                logging.info(
+                    f"成功提取 Video ID: {video_id}, Title: {video_title}"
+                )
 
             # --- 使用 video_id 構建路徑 --- 
             output_dir = os.path.join(self.directories['audio'], video_id)
@@ -387,12 +391,13 @@ class YouTubeSummarizer:
             self.progress_callback("下載", 10, f"準備下載 Video ID: {video_id}...")
             logging.info(f"開始使用 yt-dlp 下載並轉換音訊 (選項: {ydl_opts_download})")
             with yt_dlp.YoutubeDL(ydl_opts_download) as ydl:
-                # 再次提取完整資訊並觸發下載
-                full_info = ydl.extract_info(url, download=True)
-                # 這裡的 full_info 可能比第一次獲取的更完整，但我們主要用它來觸發下載
-                # 確認下載的檔案確實存在
+                # Pass the string URL here as well
+                full_info = ydl.extract_info(url_str, download=True)
                 if not os.path.exists(audio_path):
-                    raise IOError(f"yt-dlp 下載後未找到預期的音訊檔案: {audio_path}")
+                    # Adjusted line length
+                    raise IOError(
+                        f"yt-dlp 下載後未找到預期的音訊檔案: {audio_path}"
+                    )
 
             self.progress_callback("下載", 30, "影片下載及音訊提取完成")
                 
