@@ -52,6 +52,19 @@ FFPROBE_PATH=你的ffprobe路徑  # 可選，預設為 /opt/homebrew/bin/ffprobe
 
 ## 使用方法
 
+### 自動更新依賴並啟動（推薦）：
+
+使用專案提供的啟動腳本，自動更新關鍵依賴並啟動應用：
+```bash
+chmod +x run.sh  # 首次使用前確保腳本具有執行權限
+./run.sh
+```
+
+這個腳本會自動執行以下操作：
+1. 激活虛擬環境
+2. 更新關鍵依賴套件 (yt-dlp, openai, fastapi, uvicorn, google-generativeai, jinja2)
+3. 啟動 Web 應用
+
 ### 命令列使用：
 
 基本使用：
@@ -73,10 +86,26 @@ python main.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --log-level DEBUG
 
 啟動 Web 伺服器：
 ```bash
-uvicorn app:app --reload
+python main.py
 ```
 
 然後在瀏覽器中訪問：`http://localhost:8000`
+
+## 本地開發指南
+
+### 常見問題排解
+
+1. **YouTube 下載錯誤**：
+   - YouTube 頻繁更新其網站結構，如遇到下載錯誤，請先運行 `pip install --upgrade yt-dlp`
+   - 對於 HTTP 429 錯誤，嘗試等待幾分鐘後再試
+
+2. **無法導入 yt_summarizer**：
+   - 確保 `yt_summarizer.py` 在項目根目錄
+   - 檢查 Python 路徑: `python -c "import sys; print(sys.path)"`
+
+3. **API 金鑰問題**：
+   - 可以通過 Web 界面直接輸入 API 金鑰，無需設置環境變量
+   - 確保 API 金鑰有足夠的配額和權限
 
 ## 輸出結果
 
@@ -101,6 +130,7 @@ uvicorn app:app --reload
 - 需要穩定的網路連接
 - API 使用會產生費用
 - 音訊檔案超過 25MB 會自動分割處理
+- 如遇到 YouTube 驗證機制，可能需要等待幾小時後再試
 
 ## 授權說明
 
@@ -111,3 +141,16 @@ uvicorn app:app --reload
 歡迎提交 Issue 和 Pull Request
 
 ## 專案結構
+
+```bash
+yt_summarize/
+├── main.py           # FastAPI Web 應用與主程式入口
+├── yt_summarizer.py  # YouTube 影片下載與摘要核心功能
+├── run.sh            # 自動更新依賴和啟動腳本
+├── requirements.txt  # 專案依賴套件列表
+├── .env              # 環境變數配置 (需自行創建)
+├── audio/            # 音訊文件暫存目錄 (自動生成)
+├── transcripts/      # 轉錄文本保存目錄 (自動生成)
+├── summaries/        # 生成摘要保存目錄 (自動生成)
+└── metadata/         # 影片元數據保存目錄 (自動生成)
+```
