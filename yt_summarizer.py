@@ -41,7 +41,8 @@ class YouTubeSummarizer:
     DEFAULT_OPENAI_MODEL = "o3-mini" # 新增預設 OpenAI 模型
 
     def __init__(self, api_keys: Dict[str, str] = None, keep_audio: bool = False, 
-                 directories: Dict[str, str] = None, progress_callback: Optional[Callable] = None):
+                 directories: Dict[str, str] = None, progress_callback: Optional[Callable] = None,
+                 cookie_file_path: Optional[str] = None):
         """
         初始化 YouTube 摘要器
         
@@ -50,6 +51,7 @@ class YouTubeSummarizer:
             keep_audio (bool): 是否保留音訊檔案
             directories (Dict): 目錄配置
             progress_callback (Callable): 進度回調函數，接收階段名稱、百分比和訊息
+            cookie_file_path (Optional[str]): YouTube cookies.txt 檔案的路徑
         """
         # 初始化 API 金鑰
         self.api_keys = api_keys or {}
@@ -66,6 +68,14 @@ class YouTubeSummarizer:
             
         # 初始化是否保留音檔
         self.keep_audio = keep_audio
+        
+        # 儲存 Cookie 路徑
+        self.cookie_file_path = cookie_file_path
+        if self.cookie_file_path and not os.path.exists(self.cookie_file_path):
+            logging.warning(f"提供的 Cookie 檔案路徑不存在: {self.cookie_file_path}")
+            self.cookie_file_path = None # 如果檔案不存在則不使用
+        elif self.cookie_file_path:
+            logging.info(f"將使用 Cookie 檔案: {self.cookie_file_path}")
         
         # 設置進度回調函數
         self.progress_callback = progress_callback or (lambda stage, percentage, message: None)
@@ -354,9 +364,18 @@ class YouTubeSummarizer:
                 'progress_hooks': [self.download_progress_hook],
                 'quiet': False,
                 'no_warnings': False,
+                # 添加 User Agent 模仿瀏覽器
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
             }
+
+            # 如果初始化時提供了有效的 Cookie 路徑，則添加到選項中
+            if self.cookie_file_path and os.path.exists(self.cookie_file_path):
+                ydl_opts['cookiefile'] = self.cookie_file_path
+            elif self.cookie_file_path: # 如果提供了路徑但檔案不在，再次警告
+                logging.warning(f"下載時 Cookie 檔案 {self.cookie_file_path} 不存在，將不使用 Cookie。")
             
             # 下載視頻
+            logging.info(f"使用 yt-dlp 選項: {ydl_opts}") # 打印選項以供調試
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 
@@ -390,7 +409,14 @@ class YouTubeSummarizer:
             }
                 
         except Exception as e:
-            logging.error(f"下載影片時出錯: {e}")
+            # 添加更詳細的錯誤日誌
+            if "HTTP Error 403" in str(e):
+                logging.error("收到 HTTP 403 Forbidden 錯誤。這通常表示需要 Cookie 或 IP 被限制。")
+                if not self.cookie_file_path:
+                    logging.warning("未提供 Cookie 檔案路徑。")
+                elif not os.path.exists(self.cookie_file_path):
+                    logging.warning(f"提供的 Cookie 檔案 {self.cookie_file_path} 不存在。")
+            logging.error(f"下載影片時出錯詳情: {e}", exc_info=True)
             return {
                 'status': 'error',
                 'message': str(e)
@@ -484,6 +510,44 @@ class YouTubeSummarizer:
                 'status': 'error',
                 'message': str(e)
             }
+
+    def prepare_summary_prompt(self, transcript: str, video_title: str = "") -> str:
+        """準備用於生成摘要的提示"""
+        
+        # 限制轉錄文本長度，避免超過模型限制或過於昂貴
+        max_transcript_chars = 30000 # 將限制提高到 30000
+        truncated_transcript = transcript
+        if len(transcript) > max_transcript_chars:
+            truncated_transcript = transcript[:max_transcript_chars] + "... [內容已截斷]"
+            logging.warning(f"轉錄文本過長，已截斷至 {max_transcript_chars} 字符")
+        
+        prompt_template = f"""
+        請以專業的內容分析師角度，分析以下來自 YouTube 影片的轉錄文本。
+        影片標題是：「{video_title if video_title else '未提供'}」。
+
+        轉錄文本：
+        ---
+        {truncated_transcript}
+        ---
+
+        請根據以上內容，提供以下資訊，並確保用 **繁體中文** 回答：
+
+        1.  **核心洞察 (Top 3 Insights):**
+            *   列出影片中最重要、最具啟發性的三個發現、論點或結論。
+            *   每個洞察點請簡潔有力地陳述。
+
+        2.  **精華摘要 (Concise Summary):**
+            *   撰寫一段約 150-250 字的摘要。
+            *   摘要需準確捕捉影片的核心資訊、主要論點和流程。
+            *   語言流暢，易於理解。
+
+        3.  **主題關鍵字 (Thematic Keywords):**
+            *   提供 5 個最能代表影片核心主題和內容的關鍵字。
+            *   關鍵字應具有代表性。
+
+        請確保輸出格式清晰，嚴格按照以上要求的標題（核心洞察、精華摘要、主題關鍵字）和結構進行回覆。
+        """
+        return prompt_template.strip()
 
     def generate_summary(self, transcript: str, video_title: str = "") -> Dict[str, Any]:
         """
@@ -584,7 +648,9 @@ class YouTubeSummarizer:
             logging.error(f"清理失敗: {str(e)}")
 
 # 新增一個核心處理函數，取代 main()
-def run_summary_process(url: str, keep_audio: bool = False, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
+def run_summary_process(url: str, keep_audio: bool = False, 
+                        progress_callback: Optional[Callable] = None, 
+                        cookie_file_path: Optional[str] = None) -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
     
@@ -592,7 +658,7 @@ def run_summary_process(url: str, keep_audio: bool = False, progress_callback: O
         url (str): YouTube 影片網址
         keep_audio (bool): 是否保留音訊檔案
         progress_callback (Callable): 進度回調函數
-        
+        cookie_file_path (Optional[str]): YouTube cookies.txt 檔案的路徑
     返回:
         Dict: 包含處理結果的字典
     """
@@ -600,8 +666,10 @@ def run_summary_process(url: str, keep_audio: bool = False, progress_callback: O
     start_time = time.time()
     
     try:
-        # 初始化 YouTubeSummarizer
-        summarizer = YouTubeSummarizer(keep_audio=keep_audio, progress_callback=progress_callback)
+        # 初始化 YouTubeSummarizer，傳遞 cookie 路徑
+        summarizer = YouTubeSummarizer(keep_audio=keep_audio, 
+                                     progress_callback=progress_callback,
+                                     cookie_file_path=cookie_file_path) 
         
         # 下載影片並提取音訊
         download_result = summarizer.download_video(url)

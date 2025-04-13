@@ -9,6 +9,7 @@ import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
+import logging
 
 # 添加診斷輸出
 print("正在啟動程序...")
@@ -112,24 +113,48 @@ def process_summary_task(task_id: str, url: str, keep_audio: bool):
         # 處理階段的回調函數
         def progress_callback(stage, percentage, message):
             update_task_progress(task_id, stage, percentage, message)
-        
-        # 執行摘要處理，傳入進度回調
-        result = run_summary_process(url, keep_audio, progress_callback=progress_callback)
+
+        # 從環境變數讀取 Cookie 檔案路徑
+        cookie_file_path = os.environ.get("COOKIE_FILE_PATH")
+        if cookie_file_path and not os.path.exists(cookie_file_path):
+            logging.warning(f"環境變數 COOKIE_FILE_PATH 指向的文件不存在: {cookie_file_path}")
+            cookie_file_path = None # 如果檔案不存在，則設為 None
+        elif cookie_file_path:
+            logging.info(f"從環境變數讀取到 Cookie 路徑: {cookie_file_path}")
+        else:
+            logging.info("未在環境變數中找到 COOKIE_FILE_PATH")
+
+        # 執行摘要處理，傳入進度回調和 Cookie 路徑
+        result = run_summary_process(
+            url=url, 
+            keep_audio=keep_audio, 
+            progress_callback=progress_callback,
+            cookie_file_path=cookie_file_path # 傳遞 Cookie 路徑
+        )
         
         # 更新任務結果
-        tasks[task_id]["status"] = result.get(
-            "status", "complete" if "summary" in result else "error"
-        )
+        if result and 'summary' in result and result.get('status', 'success') != 'error': 
+            # 如果 result 有效，包含摘要，且沒有明確的錯誤狀態，則標記為完成
+            tasks[task_id]["status"] = "complete" 
+            update_task_progress(task_id, "完成", 100, "摘要生成完成！")
+        else:
+            # 否則標記為錯誤
+            tasks[task_id]["status"] = "error"
+            error_message = result.get('message', '處理過程中發生未知錯誤')
+            update_task_progress(task_id, "錯誤", 0, f"處理失敗: {error_message}")
+            logging.error(f"任務 {task_id} 處理失敗: {error_message}") # 添加錯誤日誌
+        
         tasks[task_id]["result"] = result
         tasks[task_id]["completed_at"] = datetime.now().isoformat()
-        update_task_progress(task_id, "完成", 100, "摘要生成完成！")
         
     except Exception as e:
         # 處理錯誤
         tasks[task_id]["status"] = "error"
-        tasks[task_id]["result"] = {"error": str(e)}
+        error_message_exc = f"背景任務執行異常: {str(e)}"
+        tasks[task_id]["result"] = {"error": error_message_exc}
         tasks[task_id]["completed_at"] = datetime.now().isoformat()
-        update_task_progress(task_id, "錯誤", 0, f"處理失敗: {str(e)}")
+        update_task_progress(task_id, "錯誤", 0, f"處理失敗: {error_message_exc}")
+        logging.error(f"任務 {task_id} 背景執行異常: {e}", exc_info=True) # 添加詳細異常日誌
 
 # API 端點: 獲取任務狀態
 @app.get("/api/tasks/{task_id}")
