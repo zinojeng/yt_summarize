@@ -1,6 +1,6 @@
 {
   "build": {
-    "main": "app.py",
+    "main": "main.py",
     "buildCommand": "pip install -e .",
     "installCommand": "pip install -r requirements.txt",
     "envs": [
