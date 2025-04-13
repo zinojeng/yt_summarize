@@ -69,11 +69,6 @@ async def create_summary(request: SummaryRequest, background_tasks: BackgroundTa
     logging.info(f"Received summary request: URL='{request.url}', KeepAudio={request.keep_audio}")
     # logging.info(f"Keys provided: OpenAI={bool(request.openai_key)}, Google={bool(request.google_key)}")
 
-    # Basic URL validation (can be improved with regex or Pydantic's HttpUrl)
-    if not request.url or not request.url.strip().startswith(("http://", "https://")):
-        logging.error(f"Invalid URL format received: '{request.url}'")
-        raise HTTPException(status_code=400, detail="提供的 URL 格式無效或為空。請檢查是否以 http:// 或 https:// 開頭。")
-
     task_id = f"{int(time.time())}-{len(tasks) + 1}"
     tasks[task_id] = {
         "id": task_id,
