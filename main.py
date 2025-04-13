@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
 
@@ -39,6 +39,8 @@ tasks: Dict[str, Dict[str, Any]] = {}
 class SummaryRequest(BaseModel):
     url: HttpUrl
     keep_audio: bool = False
+    openai_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
 
 # API 端點: 提交摘要請求
 @app.post("/api/summary")
@@ -54,6 +56,12 @@ async def create_summary(request: SummaryRequest, background_tasks: BackgroundTa
         "keep_audio": request.keep_audio,
         "result": None
     }
+    
+    # 暫時設置 API 金鑰（如果提供）
+    if request.openai_api_key:
+        os.environ["OPENAI_API_KEY"] = request.openai_api_key
+    if request.google_api_key:
+        os.environ["GOOGLE_API_KEY"] = request.google_api_key
     
     # 在後台執行處理任務
     background_tasks.add_task(process_summary_task, task_id, str(request.url), request.keep_audio)
@@ -130,7 +138,7 @@ async def home(request: Request):
                 display: flex;
                 flex-direction: column;
             }
-            input[type="url"] {
+            input[type="url"], input[type="text"], input[type="password"] {
                 padding: 10px;
                 margin-bottom: 10px;
                 border: 1px solid #ddd;
@@ -214,6 +222,22 @@ async def home(request: Request):
             .option-label {
                 margin-left: 10px;
             }
+            .api-settings {
+                margin-top: 20px;
+                padding: 15px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background-color: #f9f9f9;
+            }
+            .api-settings h3 {
+                margin-top: 0;
+                color: #333;
+            }
+            .api-note {
+                font-size: 0.9em;
+                color: #666;
+                margin-top: 5px;
+            }
         </style>
     </head>
     <body>
@@ -221,6 +245,16 @@ async def home(request: Request):
         <div class="container">
             <form id="summaryForm">
                 <input type="url" id="videoUrl" name="url" placeholder="輸入 YouTube 影片網址" required>
+                
+                <div class="api-settings">
+                    <h3>API 金鑰設定</h3>
+                    <input type="password" id="openaiKey" name="openai_api_key" placeholder="OpenAI API 金鑰 (必填)">
+                    <p class="api-note">需要 OpenAI API 金鑰才能執行摘要生成。</p>
+                    
+                    <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
+                    <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。如果未提供，將只使用 OpenAI。</p>
+                </div>
+                
                 <div class="option-container">
                     <label class="switch">
                         <input type="checkbox" id="keepAudio" name="keep_audio">
@@ -251,6 +285,13 @@ async def home(request: Request):
                 
                 const url = document.getElementById('videoUrl').value;
                 const keepAudio = document.getElementById('keepAudio').checked;
+                const openaiApiKey = document.getElementById('openaiKey').value;
+                const googleApiKey = document.getElementById('googleKey').value;
+                
+                if (!openaiApiKey) {
+                    alert('請輸入 OpenAI API 金鑰');
+                    return;
+                }
                 
                 document.getElementById('loading').style.display = 'block';
                 document.getElementById('results').style.display = 'none';
@@ -264,7 +305,9 @@ async def home(request: Request):
                         },
                         body: JSON.stringify({
                             url: url,
-                            keep_audio: keepAudio
+                            keep_audio: keepAudio,
+                            openai_api_key: openaiApiKey,
+                            google_api_key: googleApiKey
                         })
                     });
                     
