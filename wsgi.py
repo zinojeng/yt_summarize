@@ -18,16 +18,10 @@ try:
 except ImportError:
     logger.info("安裝 google-generativeai...")
     import subprocess
-    packages = [
-        "protobuf",
-        "google-api-python-client",
-        "google-auth",
-        "google-generativeai==0.3.1"
-    ]
-    for package in packages:
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--no-cache-dir", package
-        ])
+    subprocess.check_call(
+        ["pip", "install", "--upgrade", "yt-dlp", "openai", "fastapi", "uvicorn", 
+         "google-generativeai>=0.4.0"]
+    )
     import google.generativeai
     logger.info("google-generativeai 安裝完成")
 

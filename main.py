@@ -88,89 +88,81 @@ class SummaryRequest(BaseModel):
     google_api_key: Optional[str] = None
 
 # API 端點: 提交摘要請求
-@app.post("/api/summary")
-async def create_summary(request: SummaryRequest, background_tasks: BackgroundTasks):
-    # Log the received request data
-    logging.info(f"Received summary request: URL='{request.url}', KeepAudio={request.keep_audio}")
-    # logging.info(f"Keys provided: OpenAI={bool(request.openai_key)}, Google={bool(request.google_key)}")
-
-    task_id = f"{int(time.time())}-{len(tasks) + 1}"
-    tasks[task_id] = {
-        "id": task_id,
-        "status": "pending",
-        "progress": {"stage": "隊列中", "percentage": 0, "message": "等待處理..."},
-        "result": None,
-        "start_time": time.time(),
-        "is_cancelled": False
-    }
-    # Pass API keys to the background task
-    background_tasks.add_task(process_summary_task, task_id, request.url, 
-                              request.keep_audio, # Corrected order
-                              request.openai_api_key, request.google_api_key)
-    logging.info(f"Task {task_id} created for URL: {request.url}")
+@app.post("/api/summarize")
+async def summarize_video(request: Request, background_tasks: BackgroundTasks):
+    data = await request.json()
+    url = data.get("url")
+    keep_audio = data.get("keep_audio", False)
+    openai_api_key = data.get("openai_api_key")
+    google_api_key = data.get("google_api_key")
+    model_type = data.get("model_type", "auto")  # 接收模型選擇
+    
+    if not url:
+        return {"status": "error", "message": "缺少 YouTube URL"}
+    
+    if not openai_api_key:
+        return {"status": "error", "message": "缺少 OpenAI API 金鑰"}
+    
+    # 生成唯一任務 ID
+    task_id = str(uuid.uuid4())
+    tasks[task_id] = {"id": task_id, "status": "processing", "url": url, "timestamp": time.time()}
+    
+    # 啟動背景處理任務
+    background_tasks.add_task(
+        process_video, 
+        task_id, 
+        url, 
+        keep_audio, 
+        openai_api_key=openai_api_key, 
+        google_api_key=google_api_key,
+        model_type=model_type  # 傳遞模型選擇
+    )
+    
     return {"task_id": task_id}
 
-# 更新任務進度的函數
-def update_task_progress(task_id: str, stage: str, percentage: int, message: str):
-    if task_id in tasks:
-        tasks[task_id]["progress"] = {
-            "stage": stage,
-            "percentage": percentage,
-            "message": message
-        }
-
-# 背景處理任務
-def process_summary_task(task_id: str, url: str, keep_audio: bool, openai_api_key: Optional[str], google_api_key: Optional[str]):
+# 背景處理函數
+async def process_video(
+    task_id: str, 
+    url: str, 
+    keep_audio: bool, 
+    openai_api_key: str, 
+    google_api_key: str = None,
+    model_type: str = "auto"
+):
     try:
-        # 更新任務狀態為處理中
+        # 更新任務狀態
         tasks[task_id]["status"] = "processing"
-        update_task_progress(task_id, "下載", 10, "正在下載影片...")
         
-        # 處理階段的回調函數
+        # 進度更新回調函數
         def progress_callback(stage, percentage, message):
-            update_task_progress(task_id, stage, percentage, message)
-
-        # 從環境變數讀取 Cookie 檔案路徑
-        cookie_file_path = "/app/cookies.txt"
-        if not os.path.exists(cookie_file_path):
-            logging.info(f"Cookie 文件 {cookie_file_path} 不存在 (可能是因為未設定 COOKIE_FILE_CONTENT 環境變數)")
-            cookie_file_path = None
-        elif cookie_file_path:
-            logging.info(f"將使用 Cookie 文件: {cookie_file_path}")
-
-        # 執行摘要處理，傳入進度回調和 Cookie 路徑
+            if task_id in tasks:
+                tasks[task_id]["progress"] = {
+                    "stage": stage,
+                    "percentage": percentage,
+                    "message": message,
+                    "timestamp": time.time()  # 添加時間戳記，確保每次更新都有變化
+                }
+                # 每次更新進度時記錄日誌，方便調試
+                logging.info(f"進度更新: [{task_id}] {stage} {percentage}% - {message}")
+        
+        # 調用 YouTubeSummarizer 處理影片
         result = run_summary_process(
-            url=url, 
-            keep_audio=keep_audio, 
+            url=url,
+            keep_audio=keep_audio,
             progress_callback=progress_callback,
-            cookie_file_path=cookie_file_path,
             openai_api_key=openai_api_key,
-            google_api_key=google_api_key
+            google_api_key=google_api_key,
+            model_type=model_type
         )
         
         # 更新任務結果
-        if result and 'summary' in result and result.get('status', 'success') != 'error': 
-            # 如果 result 有效，包含摘要，且沒有明確的錯誤狀態，則標記為完成
-            tasks[task_id]["status"] = "complete" 
-            update_task_progress(task_id, "完成", 100, "摘要生成完成！")
-        else:
-            # 否則標記為錯誤
-            tasks[task_id]["status"] = "error"
-            error_message = result.get('message', '處理過程中發生未知錯誤')
-            update_task_progress(task_id, "錯誤", 0, f"處理失敗: {error_message}")
-            logging.error(f"任務 {task_id} 處理失敗: {error_message}") # 添加錯誤日誌
-        
+        tasks[task_id]["status"] = "complete"
         tasks[task_id]["result"] = result
-        tasks[task_id]["completed_at"] = datetime.now().isoformat()
-        
+    
     except Exception as e:
-        # 處理錯誤
+        logging.error(f"處理影片時發生錯誤: {str(e)}")
         tasks[task_id]["status"] = "error"
-        error_message_exc = f"背景任務執行異常: {str(e)}"
-        tasks[task_id]["result"] = {"error": error_message_exc}
-        tasks[task_id]["completed_at"] = datetime.now().isoformat()
-        update_task_progress(task_id, "錯誤", 0, f"處理失敗: {error_message_exc}")
-        logging.error(f"任務 {task_id} 背景執行異常: {e}", exc_info=True) # 添加詳細異常日誌
+        tasks[task_id]["error"] = str(e)
 
 # API 端點: 獲取任務狀態
 @app.get("/api/tasks/{task_id}")
@@ -186,11 +178,23 @@ async def get_task_progress(task_id: str):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="任務不存在")
     
-    return tasks[task_id].get("progress", {
-        "stage": "未知",
+    # 獲取當前進度，如果不存在則使用默認值
+    progress = tasks[task_id].get("progress", {})
+    
+    # 確保所有必要字段都有有效的默認值
+    default_progress = {
+        "stage": "初始化",
         "percentage": 0,
-        "message": "無進度信息"
-    })
+        "message": "正在準備處理...",
+        "timestamp": time.time()
+    }
+    
+    # 合併現有進度與默認值
+    for key, value in default_progress.items():
+        if key not in progress or progress[key] is None:
+            progress[key] = value
+    
+    return progress
 
 # API 端點: 獲取所有任務列表
 @app.get("/api/tasks")
@@ -219,7 +223,8 @@ async def home(request: Request):
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>YouTube 影片摘要服務</title>
-        <!-- 引入 Marked.js -->
+        <!-- 引入 jQuery 和 Marked.js -->
+        <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <style>
             body {
@@ -492,6 +497,10 @@ async def home(request: Request):
             .progress-container {
                 margin-top: 20px;
                 text-align: left;
+                background-color: #f9f9f9;
+                padding: 15px;
+                border-radius: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
             }
             .progress-bar {
                 height: 20px;
@@ -499,6 +508,7 @@ async def home(request: Request):
                 border-radius: 10px;
                 margin-bottom: 10px;
                 overflow: hidden;
+                box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
             }
             .progress-bar-fill {
                 height: 100%;
@@ -506,14 +516,73 @@ async def home(request: Request):
                 border-radius: 10px;
                 width: 0%;
                 transition: width 0.5s ease;
+                position: relative;
             }
             .progress-stage {
                 font-weight: bold;
                 margin-bottom: 5px;
+                font-size: 1.1em;
+                color: #333;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
             }
             .progress-message {
                 font-size: 0.9em;
                 color: #666;
+                padding: 5px 0;
+                margin-bottom: 10px;
+            }
+            
+            /* 階段指示器 */
+            .stage-indicator {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 15px;
+                position: relative;
+                padding-top: 25px;
+            }
+            .stage-indicator::before {
+                content: "";
+                position: absolute;
+                top: 35px;
+                left: 7%;
+                right: 7%;
+                height: 4px;
+                background-color: #eee;
+                z-index: 1;
+            }
+            .stage-step {
+                width: 60px;
+                text-align: center;
+                position: relative;
+                z-index: 2;
+            }
+            .stage-dot {
+                width: 20px;
+                height: 20px;
+                background-color: #ddd;
+                border-radius: 50%;
+                margin: 0 auto 10px;
+                position: relative;
+                z-index: 2;
+                border: 3px solid #f9f9f9;
+            }
+            .stage-name {
+                font-size: 0.8em;
+                color: #888;
+                white-space: nowrap;
+            }
+            .stage-step.active .stage-dot {
+                background-color: #c4302b;
+                box-shadow: 0 0 0 3px rgba(196, 48, 43, 0.2);
+            }
+            .stage-step.active .stage-name {
+                color: #333;
+                font-weight: bold;
+            }
+            .stage-step.completed .stage-dot {
+                background-color: #27ae60;
             }
             #download-btn {
                 margin-top: 15px;
@@ -581,6 +650,60 @@ async def home(request: Request):
                 border-left: 3px solid #ccc;
                 color: #666;
             }
+            .summary-content {
+                background-color: #f5f5f5;
+                padding: 15px;
+                border-radius: 5px;
+                margin-bottom: 20px;
+                max-height: 500px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+            }
+            .button-group {
+                margin-top: 15px;
+                margin-bottom: 30px;
+            }
+            .btn {
+                padding: 10px 15px;
+                background-color: #c4302b;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                margin-right: 10px;
+                font-weight: bold;
+            }
+            .btn:hover {
+                background-color: #aa2a26;
+            }
+            
+            .form-group {
+                margin-top: 15px;
+                margin-bottom: 15px;
+            }
+            
+            .form-group label {
+                display: block;
+                margin-bottom: 5px;
+                font-weight: bold;
+            }
+            
+            select {
+                width: 100%;
+                padding: 10px;
+                border-radius: 5px;
+                border: 1px solid #ddd;
+                background-color: #f8f8f8;
+                margin-bottom: 5px;
+            }
+            
+            .model-info {
+                margin-top: 5px;
+                margin-bottom: 10px;
+                font-size: 0.9em;
+                color: #666;
+                font-style: italic;
+            }
         </style>
     </head>
     <body>
@@ -589,8 +712,8 @@ async def home(request: Request):
         
         <div class="container">
             <h2>開始使用</h2>
-            <form id="summaryForm">
-                <input type="url" id="videoUrl" name="url" placeholder="輸入 YouTube 影片網址" required>
+            <form id="videoForm">
+                <input type="url" id="youtubeUrl" name="url" placeholder="輸入 YouTube 影片網址" required>
                 
                 <div class="api-settings">
                     <h3>API 金鑰設定</h3>
@@ -599,6 +722,16 @@ async def home(request: Request):
                     
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
                     <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
+                    <p class="api-note" style="color: #2a9d8f;"><strong>最新更新:</strong> 現在使用 Google 最新的 gemini-2.5-pro-exp-03-25 模型!</p>
+                    
+                    <div class="form-group">
+                        <label for="modelType">優先使用模型:</label>
+                        <select id="modelType" name="model_type">
+                            <option value="auto">自動 (根據可用性)</option>
+                            <option value="openai">OpenAI (GPT)</option>
+                            <option value="gemini">Google (Gemini)</option>
+                        </select>
+                    </div>
                 </div>
                 
                 <div class="option-container">
@@ -608,7 +741,7 @@ async def home(request: Request):
                     </label>
                     <span class="option-label">保留音訊檔案</span>
                 </div>
-                <button type="submit">取得摘要</button>
+                <button type="button" id="submitBtn">取得摘要</button>
             </form>
             
             <div id="loading" class="loading" style="display: none;">
@@ -618,6 +751,30 @@ async def home(request: Request):
                 
                 <!-- 進度顯示 -->
                 <div class="progress-container">
+                    <!-- 階段指示器 -->
+                    <div class="stage-indicator">
+                        <div class="stage-step" id="stage-init">
+                            <div class="stage-dot"></div>
+                            <div class="stage-name">初始化</div>
+                        </div>
+                        <div class="stage-step" id="stage-download">
+                            <div class="stage-dot"></div>
+                            <div class="stage-name">下載</div>
+                        </div>
+                        <div class="stage-step" id="stage-transcribe">
+                            <div class="stage-dot"></div>
+                            <div class="stage-name">轉錄</div>
+                        </div>
+                        <div class="stage-step" id="stage-summary">
+                            <div class="stage-dot"></div>
+                            <div class="stage-name">摘要</div>
+                        </div>
+                        <div class="stage-step" id="stage-complete">
+                            <div class="stage-dot"></div>
+                            <div class="stage-name">完成</div>
+                        </div>
+                    </div>
+                    
                     <div class="progress-stage" id="progressStage">初始化中...</div>
                     <div class="progress-bar">
                         <div class="progress-bar-fill" id="progressBarFill"></div>
@@ -626,14 +783,15 @@ async def home(request: Request):
                 </div>
             </div>
             
-            <div id="results">
+            <div id="results" style="display: none;">
                 <h2>處理結果</h2>
-                <div id="taskInfo"></div>
-                <h3>影片標題</h3>
-                <div id="title"></div>
-                <h3>摘要內容</h3>
-                <div id="summary" class="summary"></div>
-                <button id="download-btn" style="display: none;">下載摘要 (Markdown)</button>
+                <p id="taskInfo"></p>
+                <h3 id="title"></h3>
+                <div id="summary" class="summary-content"></div>
+                <div class="button-group">
+                    <button id="download-btn" class="btn" style="display: none;">下載摘要</button>
+                    <button id="download-transcript-btn" class="btn" style="display: none;">下載逐字稿</button>
+                </div>
             </div>
         </div>
 
@@ -688,114 +846,350 @@ async def home(request: Request):
         </div>
         
         <script>
-            document.getElementById('summaryForm').addEventListener('submit', async function(e) {
-                e.preventDefault();
+            $(document).ready(function() {
+                // 初始化 Marked.js
+                marked.use({
+                    breaks: true,
+                    gfm: true
+                });
                 
-                const url = document.getElementById('videoUrl').value;
-                const keepAudio = document.getElementById('keepAudio').checked;
-                const openaiApiKey = document.getElementById('openaiKey').value;
-                const googleApiKey = document.getElementById('googleKey').value;
-                
-                if (!openaiApiKey) {
-                    alert('請輸入 OpenAI API 金鑰');
-                    return;
+                // 顯示處理中的UI函數
+                function showProcessingUI() {
+                    $("#loading").show();
+                    $("#results").hide();
+                    
+                    // 重置進度條
+                    $("#progressStage").text("初始化中...");
+                    $("#progressBarFill").css("width", "0%");
+                    $("#progressBarFill").css("background-color", "#6c757d"); // 灰色
+                    $("#progressMessage").text("準備處理您的請求...");
+                    
+                    // 重置階段指示器
+                    $(".stage-step").removeClass("active completed");
+                    $("#stage-init").addClass("active");
                 }
                 
-                document.getElementById('loading').style.display = 'block';
-                document.getElementById('results').style.display = 'none';
-                
-                // 重置進度條
-                document.getElementById('progressStage').textContent = '初始化中...';
-                document.getElementById('progressBarFill').style.width = '0%';
-                document.getElementById('progressMessage').textContent = '準備處理您的請求...';
-                
-                try {
-                    // 發送請求
-                    const response = await fetch('/api/summary', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
+                // 處理摘要按鈕點擊
+                $("#submitBtn").click(function(e) {
+                    // 防止表單提交導致頁面重新載入
+                    e.preventDefault();
+                    
+                    // 獲取表單數據
+                    const youtubeUrl = $("#youtubeUrl").val();
+                    const keepAudio = $("#keepAudio").prop("checked");
+                    const openaiApiKey = $("#openaiKey").val();
+                    const googleApiKey = $("#googleKey").val();
+                    const modelType = $("#modelType").val();
+                    
+                    // 檢查必填項
+                    if (!youtubeUrl) {
+                        alert("請輸入 YouTube 網址");
+                        return;
+                    }
+                    
+                    if (!openaiApiKey) {
+                        alert("請輸入 OpenAI API 金鑰");
+                        return;
+                    }
+                    
+                    // 顯示處理中的UI
+                    showProcessingUI();
+                    
+                    // 創建請求數據
+                    const requestData = {
+                        url: youtubeUrl,
+                        keep_audio: keepAudio,
+                        openai_api_key: openaiApiKey,
+                        google_api_key: googleApiKey,
+                        model_type: modelType
+                    };
+                    
+                    // 發送AJAX請求
+                    $.ajax({
+                        url: "/api/summarize",
+                        type: "POST",
+                        contentType: "application/json",
+                        data: JSON.stringify(requestData),
+                        success: function(data) {
+                            if (data.task_id) {
+                                pollTaskStatus(data.task_id);
+                            } else {
+                                alert("請求失敗: 無效的回應");
+                                $("#loading").hide();
+                            }
                         },
-                        body: JSON.stringify({
-                            url: url,
-                            keep_audio: keepAudio,
-                            openai_api_key: openaiApiKey,
-                            google_api_key: googleApiKey
-                        })
+                        error: function(xhr, status, error) {
+                            alert("錯誤: " + (xhr.responseJSON?.detail || error || "未知錯誤"));
+                            $("#loading").hide();
+                        }
+                    });
+                });
+                
+                // 防止表單默認提交行為
+                $("#videoForm").on("submit", function(e) {
+                    e.preventDefault();
+                    return false;
+                });
+                
+                // 輪詢任務狀態函數
+                function pollTaskStatus(taskId) {
+                    let previousPercentage = 0;
+                    let previousTimestamp = 0;
+                    let failedPolls = 0;
+                    const MAX_FAILED_POLLS = 5;
+
+                    // 狀態檢查函數
+                    const checkStatus = function() {
+                        // 檢查任務進度 - 使用獨立的 AJAX 調用獲取進度信息
+                        $.ajax({
+                            url: `/api/tasks/${taskId}/progress`,
+                            type: "GET",
+                            cache: false,  // 禁用緩存
+                            dataType: 'json',
+                            headers: {
+                                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                                'Pragma': 'no-cache',
+                                'Expires': '0'
+                            }, 
+                            data: { _t: new Date().getTime() },  // 防止緩存
+                            success: function(progressData) {
+                                // 檢查數據是否有更新（使用時間戳或百分比變化檢測）
+                                const currentTimestamp = progressData.timestamp || 0;
+                                const hasUpdate = (currentTimestamp > previousTimestamp) || 
+                                                  (progressData.percentage !== previousPercentage);
+                                
+                                // 無論是否有更新，都刷新顯示（確保用戶能看到最新狀態）
+                                updateProgress(progressData);
+                                console.log(`進度更新: ${progressData.stage} ${progressData.percentage}% - ${progressData.message} (時間戳: ${currentTimestamp})`);
+                                
+                                if (hasUpdate) {
+                                    previousPercentage = progressData.percentage || 0;
+                                    previousTimestamp = currentTimestamp;
+                                    failedPolls = 0; // 重置失敗計數
+                                }
+                            },
+                            error: function() {
+                                console.error("獲取進度信息失敗");
+                                failedPolls++; // 增加失敗計數
+                                if (failedPolls > MAX_FAILED_POLLS) {
+                                    console.error("多次獲取進度失敗，停止輪詢");
+                                    clearInterval(pollInterval);
+                                }
+                            }
+                        });
+                        
+                        // 獨立檢查任務狀態
+                        $.ajax({
+                            url: `/api/tasks/${taskId}`,
+                            type: "GET",
+                            cache: false,  // 禁用緩存
+                            dataType: 'json',
+                            headers: {
+                                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                                'Pragma': 'no-cache',
+                                'Expires': '0'
+                            },
+                            data: { _t: new Date().getTime() },  // 防止緩存
+                            success: function(taskData) {
+                                if (taskData.status === "complete") {
+                                    // 確保進度顯示為100%
+                                    updateProgress({
+                                        stage: "完成",
+                                        percentage: 100,
+                                        message: "摘要生成完成！",
+                                        timestamp: new Date().getTime()
+                                    });
+                                    
+                                    // 顯示結果
+                                    setTimeout(() => {
+                                        displayResults(taskData);
+                                        $("#loading").hide();
+                                        $("#results").show();
+                                        clearInterval(pollInterval);
+                                    }, 500); // 稍微延遲顯示結果，讓用戶看到100%完成狀態
+                                    
+                                } else if (taskData.status === "error") {
+                                    alert("處理失敗: " + (taskData.error || "未知錯誤"));
+                                    $("#loading").hide();
+                                    clearInterval(pollInterval);
+                                }
+                            },
+                            error: function() {
+                                console.error("輪詢任務狀態失敗");
+                                failedPolls++; // 增加失敗計數
+                            }
+                        });
+                    };
+                    
+                    // 定時檢查狀態（每0.3秒檢查一次，提高進度更新頻率）
+                    const pollInterval = setInterval(checkStatus, 300);
+                    
+                    // 立即檢查一次
+                    checkStatus();
+                }
+                
+                // 更新進度顯示函數
+                function updateProgress(progress) {
+                    if (!progress) return;
+                    
+                    const stage = progress.stage || "處理中";
+                    const percentage = progress.percentage || 0;
+                    const message = progress.message || "請稍候...";
+                    
+                    // 更新文字信息
+                    $("#progressStage").text(`${stage} (${percentage}%)`);
+                    $("#progressMessage").text(message);
+                    
+                    // 以更快的動畫方式更新進度條，讓變化更流暢
+                    $("#progressBarFill").stop(true, true).animate({
+                        width: `${percentage}%`
+                    }, 200); // 減少動畫時間以更快地反應變化
+                    
+                    // 根據不同階段更新顏色和階段指示器
+                    let stageColor = "#c4302b"; // 默認紅色
+                    
+                    // 重置所有階段指示器
+                    $(".stage-step").removeClass("active completed");
+                    
+                    // 根據當前階段更新階段指示器
+                    if (stage === "初始化" || stage.includes("初始化")) {
+                        stageColor = "#6c757d"; // 灰色
+                        $("#stage-init").addClass("active");
+                    } else if (stage === "下載") {
+                        stageColor = "#3498db"; // 藍色
+                        $("#stage-init").addClass("completed");
+                        $("#stage-download").addClass("active");
+                    } else if (stage === "轉錄") {
+                        stageColor = "#2ecc71"; // 綠色
+                        $("#stage-init, #stage-download").addClass("completed");
+                        $("#stage-transcribe").addClass("active");
+                    } else if (stage === "摘要") {
+                        stageColor = "#f39c12"; // 橙色
+                        $("#stage-init, #stage-download, #stage-transcribe").addClass("completed");
+                        $("#stage-summary").addClass("active");
+                    } else if (stage === "完成") {
+                        stageColor = "#27ae60"; // 深綠色
+                        $("#stage-init, #stage-download, #stage-transcribe, #stage-summary").addClass("completed");
+                        $("#stage-complete").addClass("active");
+                    }
+                    
+                    // 更新進度條顏色
+                    $("#progressBarFill").css("background-color", stageColor);
+                    
+                    // 添加處理階段的詳細描述
+                    let stageDetail = "";
+                    if (stage === "下載") {
+                        if (percentage < 30) {
+                            stageDetail = "下載影片中...";
+                        } else {
+                            stageDetail = "提取音訊中...";
+                        }
+                    } else if (stage === "轉錄") {
+                        if (percentage < 50) {
+                            stageDetail = "準備轉錄中...";
+                        } else {
+                            stageDetail = "影片內容轉文字中...";
+                        }
+                    } else if (stage === "摘要") {
+                        if (percentage < 85) {
+                            stageDetail = "分析內容中...";
+                        } else {
+                            stageDetail = "生成摘要中...";
+                        }
+                    }
+                    
+                    // 如果有詳細描述則更新
+                    if (stageDetail && !message.includes(stageDetail)) {
+                        $("#progressMessage").text(`${message} (${stageDetail})`);
+                    }
+                }
+                
+                // 顯示結果函數
+                function displayResults(taskData) {
+                    const result = taskData.result;
+                    
+                    // 顯示基本資訊
+                    $("#taskInfo").text(`任務 ID: ${taskData.id}, 處理時間: ${formatTime(result.processing_time)}`);
+                    $("#title").text(result.title || "無標題");
+                    
+                    // 先移除任何已存在的模型信息
+                    $(".model-info").remove();
+                    
+                    // 顯示使用的模型信息（只添加一次）
+                    const modelInfo = $("<div>").addClass("model-info").text(`使用模型: ${result.model_used || "未知"}`);
+                    $("#title").after(modelInfo);
+                    
+                    // 渲染摘要內容
+                    const summaryContent = result.summary || "無摘要內容";
+                    $("#summary").html(marked.parse(summaryContent));
+                    
+                    // 顯示下載按鈕
+                    $("#download-btn").show();
+                    $("#download-transcript-btn").show();
+                    
+                    // 下載摘要按鈕點擊處理
+                    $("#download-btn").off("click").on("click", function(e) {
+                        e.preventDefault();
+                        downloadAsFile(summaryContent, (result.title || "summary"), "md", "text/markdown");
+                        return false;
                     });
                     
-                    const data = await response.json();
-                    
-                    if (response.ok) {
-                        pollTaskStatus(data.task_id);
-                    } else {
-                        alert('錯誤: ' + (data.detail || '未知錯誤'));
-                        document.getElementById('loading').style.display = 'none';
+                    // 下載逐字稿按鈕點擊處理
+                    $("#download-transcript-btn").off("click").on("click", function(e) {
+                        e.preventDefault();
+                        
+                        if (!result.transcript) {
+                            alert("找不到逐字稿內容");
+                            return false;
+                        }
+                        
+                        downloadAsFile(result.transcript, (result.title || "transcript"), "txt", "text/plain", "_逐字稿");
+                        return false;
+                    });
+                }
+                
+                // 通用下載文件函數
+                function downloadAsFile(content, title, extension, mimeType, suffix = "") {
+                    try {
+                        // 清理檔名，只保留基本字母數字和空格
+                        const safeTitle = title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_");
+                        const filename = `${safeTitle}${suffix}.${extension}`;
+                        
+                        // 處理可能的編碼問題，確保內容為 UTF-8
+                        const encoder = new TextEncoder();
+                        const data = encoder.encode(content);
+                        
+                        // 創建 Blob 物件，明確指定 UTF-8 編碼
+                        const blob = new Blob([data], {type: `${mimeType};charset=utf-8`});
+                        const url = window.URL.createObjectURL(blob);
+                        
+                        // 創建並點擊下載連結
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = filename;
+                        a.style.display = "none";
+                        
+                        // 加入到文檔，點擊後移除
+                        document.body.appendChild(a);
+                        a.click();
+                        
+                        // 清理資源
+                        setTimeout(function() {
+                            document.body.removeChild(a);
+                            window.URL.revokeObjectURL(url);
+                        }, 100);
+                    } catch (error) {
+                        console.error("下載檔案失敗:", error);
+                        alert("下載失敗: " + error.message);
                     }
-                } catch (error) {
-                    alert('請求發送失敗: ' + error.message);
-                    document.getElementById('loading').style.display = 'none';
+                }
+                
+                // 格式化時間函數
+                function formatTime(seconds) {
+                    if (!seconds) return "未知時間";
+                    return `${Math.floor(seconds / 60)}分 ${Math.round(seconds % 60)}秒`;
                 }
             });
-            
-            async function pollTaskStatus(taskId) {
-                const pollInterval = setInterval(async () => {
-                    try {
-                        const response = await fetch(`/api/tasks/${taskId}`);
-                        const taskData = await response.json();
-                        
-                        // 更新進度
-                        updateProgress(taskData.progress);
-                        
-                        if (taskData.status === 'complete') {
-                            clearInterval(pollInterval);
-                            displayResults(taskData);
-                            document.getElementById('loading').style.display = 'none';
-                            document.getElementById('results').style.display = 'block';
-                        } else if (taskData.status === 'error') {
-                            clearInterval(pollInterval);
-                            alert('處理失敗: ' + (taskData.result?.error || taskData.result?.message || '未知錯誤')); // More robust error message display
-                            document.getElementById('loading').style.display = 'none';
-                        }
-                    } catch (error) {
-                        console.error('輪詢任務狀態失敗:', error);
-                        // Consider stopping polling after too many errors
-                    }
-                }, 3000); // 每3秒檢查一次
-            }
-            
-            function updateProgress(progress) {
-                if (!progress) return;
-                
-                const stage = progress.stage || '處理中';
-                const percentage = progress.percentage || 0;
-                const message = progress.message || '請稍候...';
-                
-                document.getElementById('progressStage').textContent = stage;
-                document.getElementById('progressBarFill').style.width = `${percentage}%`;
-                document.getElementById('progressMessage').textContent = message;
-            }
-            
-            function displayResults(taskData) {
-                const result = taskData.result;
-                
-                document.getElementById('taskInfo').textContent = 
-                    `任務 ID: ${taskData.id}, 處理時間: ${formatTime(result.processing_time)}`;
-                document.getElementById('title').textContent = result.title || '無標題';
-                // --- 使用 marked.parse() 渲染 Markdown ---
-                const summaryContent = result.summary || '無摘要內容';
-                document.getElementById('summary').innerHTML = marked.parse(summaryContent);
-                // --- 修改結束 ---
-                document.getElementById('download-btn').style.display = 'inline-block';
-                document.getElementById('download-btn').onclick = () => {
-                    window.location.href = `/api/tasks/${taskData.id}/download`;
-                };
-            }
-            
-            function formatTime(seconds) {
-                if (!seconds) return '未知時間';
-                return `${Math.floor(seconds / 60)}分 ${Math.round(seconds % 60)}秒`;
-            }
         </script>
     </body>
     </html>
@@ -818,31 +1212,4 @@ if __name__ == "__main__":
         traceback.print_exc()
         sys.exit(1)
 
-# --- New Download Endpoint --- 
-@app.get("/api/tasks/{task_id}/download")
-async def download_summary(task_id: str):
-    task = tasks.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="找不到任務")
-
-    if task['status'] != 'complete':
-        raise HTTPException(status_code=400, detail="任務尚未完成或處理失敗")
-        
-    summary_content = task.get('result', {}).get('summary')
-    if not summary_content:
-        raise HTTPException(status_code=404, detail="找不到摘要內容")
-
-    # 嘗試獲取影片標題作為檔名一部分，如果沒有則使用 task_id
-    video_title = task.get('result', {}).get('title', f'summary_{task_id}')
-    # 清理標題，移除不適用於檔名的字符
-    safe_title = "".join(c for c in video_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    filename = f"{safe_title}.md"
-
-    # 返回 Markdown 內容
-    return Response(
-        content=summary_content,
-        media_type="text/markdown",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
-    ) 
+# 不需要下載端點，因為已在前端直接實現下載功能 

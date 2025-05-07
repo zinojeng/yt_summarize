@@ -7,7 +7,7 @@
 -   **自動下載 YouTube 影片**：支援多種格式，並自動提取最佳音訊。
 -   **高品質語音轉文字**：使用 OpenAI Whisper 模型進行準確的語音識別。
 -   **智慧摘要生成**：
-    -   優先使用 Google Gemini 模型 (`gemini-1.5-pro`) 生成摘要。
+    -   優先使用 Google Gemini 模型 (`gemini-2.5-pro-exp-03-25`) 生成摘要。
     -   若 Gemini 不可用或失敗，自動切換至 OpenAI 模型 (`gpt-3.5-turbo`) 作為備用。
     -   生成結構化、重點突出、排版優化的 Markdown 格式摘要。
     -   持續優化的提示工程以提升摘要品質與緊湊度。
@@ -155,7 +155,7 @@
 
 -   **轉錄模型**: OpenAI 的 `whisper-1`
 -   **摘要模型**:
-    -   主要: Google Gemini 的 `gemini-1.5-pro`
+    -   主要: Google Gemini 的 `gemini-2.5-pro-exp-03-25`
     -   備用: OpenAI 的 `gpt-3.5-turbo`
 
 ## ⚠️ 注意事項

@@ -19,7 +19,7 @@ except ImportError:
         # Shortened package list line for clarity
         packages = [
             "protobuf", "google-api-python-client", "google-auth", 
-            "google-generativeai==0.3.1"
+            "google-generativeai>=0.4.0"  # 更新為支持 gemini-2.5-pro-exp-03-25 的版本
         ]
         for package in packages:
             # Shortened check_call line
@@ -49,7 +49,7 @@ load_dotenv()
 class YouTubeSummarizer:
     # 定義模型名稱常數
     WHISPER_MODEL = "gpt-4o-transcribe"
-    GEMINI_MODEL = 'gemini-1.5-pro'
+    GEMINI_MODEL = 'gemini-2.5-pro-exp-03-25'
     OPENAI_FALLBACK_MODEL = "gpt-3.5-turbo"  # Updated fallback model
     DEFAULT_OPENAI_MODEL = "gpt-3.5-turbo"   # Updated default model
 
@@ -58,16 +58,18 @@ class YouTubeSummarizer:
                  keep_audio: bool = False, 
                  directories: Dict[str, str] = None, 
                  progress_callback: Optional[Callable] = None,
-                 cookie_file_path: Optional[str] = None):
+                 cookie_file_path: Optional[str] = None,
+                 model_preference: str = 'auto'):
         """
         初始化 YouTube 摘要器
         
         參數:
-            api_keys (Dict): API 金鑰字典，包含 'openai' 和 'gemini' 兩個鍵
+            api_keys (Dict): API 金鑰字典，包含 'openai' 和 'gemini' 鍵
             keep_audio (bool): 是否保留音訊檔案
             directories (Dict): 目錄配置
             progress_callback (Callable): 進度回調函數，接收階段名稱、百分比和訊息
             cookie_file_path (Optional[str]): YouTube cookies.txt 檔案的路徑
+            model_preference (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
         """
         self.api_keys = api_keys or {}
         if 'openai' not in self.api_keys:
@@ -77,6 +79,7 @@ class YouTubeSummarizer:
         if not self.api_keys.get('openai'):
             raise ValueError("需要 OpenAI API 金鑰")
         self.keep_audio = keep_audio
+        self.model_preference = model_preference
         self.cookie_file_path = cookie_file_path
         if self.cookie_file_path and not os.path.exists(self.cookie_file_path):
             logging.warning(f"提供的 Cookie 檔案路徑不存在: {self.cookie_file_path}")
@@ -150,8 +153,8 @@ class YouTubeSummarizer:
         # 只建立基礎目錄，影片相關子目錄在下載時建立
         os.makedirs(self.base_dir, exist_ok=True)
         for key in ['audio', 'transcript', 'summary', 'metadata']:
-            # 確保基礎分類目錄存在，但不在此建立影片ID子目錄
-            os.makedirs(os.path.join(self.base_dir, key), exist_ok=True)
+             # 確保基礎分類目錄存在，但不在此建立影片ID子目錄
+             os.makedirs(os.path.join(self.base_dir, key), exist_ok=True)
 
     def save_metadata(self, video_info, file_path):
         """儲存影片相關資訊"""
@@ -192,22 +195,22 @@ class YouTubeSummarizer:
                     logging.warning(f"初始化下載進度條時出錯: {e}")
                     # 即使出錯，也創建一個簡單的進度條
                     if not self.pbar:
-                        self.pbar = tqdm(desc="下載中...", unit='B', unit_scale=True)
+                       self.pbar = tqdm(desc="下載中...", unit='B', unit_scale=True)
 
             if self.pbar:
                 downloaded = d.get('downloaded_bytes', 0)
-                # 對於不確定進度的進度條，只更新已下載量
+                 # 對於不確定進度的進度條，只更新已下載量
                 if self.pbar.total:
-                    self.pbar.update(downloaded - self.pbar.n)
+                     self.pbar.update(downloaded - self.pbar.n)
                 else:
-                    self.pbar.n = downloaded
-                    self.pbar.refresh()
+                     self.pbar.n = downloaded
+                     self.pbar.refresh()
 
         elif d['status'] == 'finished':
             if self.pbar:
                 # 確保完成時進度條達到100% (如果知道總量)
                 if self.pbar.total and self.pbar.n < self.pbar.total:
-                    self.pbar.update(self.pbar.total - self.pbar.n)
+                     self.pbar.update(self.pbar.total - self.pbar.n)
                 self.pbar.close()
                 self.pbar = None  # 重設 pbar
             logging.info("下載完成，開始音訊處理...")
@@ -235,11 +238,11 @@ class YouTubeSummarizer:
                 probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
                 duration = float(json.loads(probe_output)['format']['duration'])
             except subprocess.CalledProcessError as e:
-                logging.error(f"執行 ffprobe 失敗 ({input_file}): {e}")
-                return None
+                 logging.error(f"執行 ffprobe 失敗 ({input_file}): {e}")
+                 return None
             except (KeyError, json.JSONDecodeError, ValueError) as e:
-                logging.error(f"解析 ffprobe 輸出失敗 ({input_file}): {e}")
-                return None
+                 logging.error(f"解析 ffprobe 輸出失敗 ({input_file}): {e}")
+                 return None
 
             # 計算需要分割的段數
             num_segments = int(duration / segment_duration) + 1
@@ -284,24 +287,24 @@ class YouTubeSummarizer:
                                     logging.warning(f"清理失敗的分段檔案 {seg_path} 時出錯: {e_rem}")
                             return None  # 返回 None 表示分割失敗
                         else:
-                            # 如果 FFmpeg 可能有警告或其他非錯誤輸出，可以選擇性記錄
-                            # if result.stderr:
-                            #    logging.debug(f"FFmpeg stderr (段 {i+1}): {result.stderr}")
-                            segments.append(output_file)
+                             # 如果 FFmpeg 可能有警告或其他非錯誤輸出，可以選擇性記錄
+                             # if result.stderr:
+                             #    logging.debug(f"FFmpeg stderr (段 {i+1}): {result.stderr}")
+                             segments.append(output_file)
 
                     except FileNotFoundError:
-                        logging.error(f"找不到 FFmpeg 執行檔: {ffmpeg_path}")
-                        return None  # FFmpeg 不存在，無法繼續
+                         logging.error(f"找不到 FFmpeg 執行檔: {ffmpeg_path}")
+                         return None  # FFmpeg 不存在，無法繼續
                     except Exception as e:  # 捕獲其他可能的 subprocess 錯誤
-                        logging.error(f"執行 FFmpeg 時發生未預期錯誤 (段 {i+1}): {e}")
-                        # 同樣清理並返回 None
-                        for seg_path in segments:
-                            try:
+                         logging.error(f"執行 FFmpeg 時發生未預期錯誤 (段 {i+1}): {e}")
+                         # 同樣清理並返回 None
+                         for seg_path in segments:
+                              try:
                                 if os.path.exists(seg_path):
                                     os.remove(seg_path)
-                            except OSError as e_rem:
-                                logging.warning(f"清理失敗的分段檔案 {seg_path} 時出錯: {e_rem}")
-                        return None
+                              except OSError as e_rem:
+                                   logging.warning(f"清理失敗的分段檔案 {seg_path} 時出錯: {e_rem}")
+                         return None
 
                     pbar.update(1)
 
@@ -322,223 +325,230 @@ class YouTubeSummarizer:
 
     def download_video(self, url: str) -> Dict[str, Any]:
         """
-        下載 YouTube 影片並轉換為音訊，使用 video_id 命名
+        下載影片並提取音訊
         
         參數:
             url (str): YouTube 影片網址
-            
         返回:
-            Dict: 包含下載結果的字典
+            Dict: 包含處理結果的字典
         """
+        # 進度初始化
+        self.progress_callback("下載", 1, "初始化下載環境...")
+        
         try:
-            self.progress_callback("下載", 5, "正在提取影片資訊...")
-            # Convert URL object to string here
-            url_str = str(url)
-            logging.info(f"正在提取影片資訊: {url_str}")
-            ydl_info_opts = {
-                'quiet': True,
-                'extract_flat': True,
-                'force_generic_extractor': True
-            }
-            with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_info:
-                # Pass the string URL to extract_info
-                info = ydl_info.extract_info(url_str, download=False)
-                if not info or not info.get('id'):
-                    raise ValueError(f"無法從 {url_str} 提取 video_id")
-                video_id = info['id']
-                video_title = info.get('title', 'unknown_title')
-                # Adjusted line length
-                logging.info(
-                    f"成功提取 Video ID: {video_id}, Title: {video_title}"
-                )
-
-            # --- 使用 video_id 構建路徑 --- 
-            output_dir = os.path.join(self.directories['audio'], video_id)
-            os.makedirs(output_dir, exist_ok=True)
-            # 輸出模板使用 video_id 作為主檔名
-            output_path_template = os.path.join(output_dir, f'{video_id}.%(ext)s')
-            # 最終的 mp3 檔案路徑
-            audio_path = os.path.join(output_dir, f'{video_id}.mp3')
-            # Metadata 檔案路徑
-            metadata_path = os.path.join(self.directories['metadata'], f'{video_id}_info.json')
-
-            logging.info(f"音訊將儲存至: {audio_path}")
-            logging.info(f"Metadata 將儲存至: {metadata_path}")
-
-            # --- 設置包含路徑的下載選項 --- 
-            # Use a clean ydl_opts dict, inheriting from self.ydl_opts is problematic
-            ydl_opts_download = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': output_path_template,  # 使用基於 video_id 的模板
-                'progress_hooks': [self.download_progress_hook],
-                'quiet': False, # Show download logs
-                'no_warnings': True, # Suppress warnings like deprecations
-                # 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-                # Let yt-dlp use its default user agent unless specific issues arise
-            }
-
-            if self.cookie_file_path and os.path.exists(self.cookie_file_path):
-                ydl_opts_download['cookiefile'] = self.cookie_file_path
-            elif self.cookie_file_path:
-                logging.warning(f"下載時 Cookie 檔案 {self.cookie_file_path} 不存在，將不使用 Cookie。")
-
-            # --- 執行下載 --- 
-            self.progress_callback("下載", 10, f"準備下載 Video ID: {video_id}...")
-            logging.info(f"開始使用 yt-dlp 下載並轉換音訊 (選項: {ydl_opts_download})")
-            with yt_dlp.YoutubeDL(ydl_opts_download) as ydl:
-                # Pass the string URL here as well
-                full_info = ydl.extract_info(url_str, download=True)
-                if not os.path.exists(audio_path):
-                    # Adjusted line length
-                    raise IOError(
-                        f"yt-dlp 下載後未找到預期的音訊檔案: {audio_path}"
-                    )
-
-            self.progress_callback("下載", 30, "影片下載及音訊提取完成")
+            # 將 cookie 文件添加到選項中
+            if self.cookie_file_path:
+                self.ydl_opts['cookiefile'] = self.cookie_file_path
+                logging.info(f"使用 cookie 檔案: {self.cookie_file_path}")
+                self.progress_callback("下載", 5, "已設定 cookie 檔案...")
+            
+            # 下載收集基本資訊
+            self.progress_callback("下載", 8, "獲取影片基本資訊...")
+            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                video_info = ydl.extract_info(url, download=False)
+                video_title = video_info.get('title', 'Untitled')
+                video_id = video_info.get('id')
                 
-            # 使用更完整的資訊儲存 Metadata
-            self.save_metadata(full_info, metadata_path)
+            if not video_title or not video_id:
+                raise ValueError("無法獲取影片標題或ID")
+            
+            self.progress_callback("下載", 12, f"影片標題: {video_title}")
+            
+            # 建立影片專屬目錄
+            try:
+                video_audio_dir = os.path.join(self.directories['audio'], video_id)
+                os.makedirs(video_audio_dir, exist_ok=True)
+                logging.info(f"為影片 {video_id} 創建音訊目錄: {video_audio_dir}")
+                self.progress_callback("下載", 15, "已建立影片專屬目錄...")
+            except OSError as e:
+                logging.warning(f"無法創建影片專屬目錄 {video_id}: {e}")
+                video_audio_dir = self.directories['audio']
+                
+            # 指定下載文件名和路徑
+            audio_output = os.path.join(video_audio_dir, f"{video_id}.%(ext)s")
+            self.ydl_opts['outtmpl'] = {'default': audio_output}
+            
+            # 進行下載
+            self.progress_callback("下載", 18, "開始下載影片...")
+            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
+                ydl.download([url])
+            
+            # 進度更新，搜尋下載的檔案
+            self.progress_callback("下載", 65, "下載完成，處理音訊檔案...")
+            audio_path = None
+            for ext in ['mp3', 'm4a', 'webm', 'mp4']:
+                path = os.path.join(video_audio_dir, f"{video_id}.{ext}")
+                if os.path.exists(path):
+                    audio_path = path
+                    break
+            
+            if not audio_path:
+                raise FileNotFoundError("找不到下載的音訊檔案")
+                
+            # 處理特殊情況 - 如果音訊檔案大小過大
+            audio_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+            if audio_size_mb > 200:  # 超過200MB考慮分割
+                self.progress_callback("下載", 68, f"音訊檔案較大 ({audio_size_mb:.1f} MB)，準備分割...")
+                # 在這裡可以添加音訊分割處理邏輯
+            
+            # 保存影片元數據
+            self.progress_callback("下載", 85, "儲存影片相關資訊...")
+            metadata_path = os.path.join(self.directories['metadata'], f"{video_id}.json")
+            self.save_metadata(video_info, metadata_path)
+            
+            self.progress_callback("下載", 100, "下載階段完成!")
             
             return {
-                'title': video_title,  # 仍然返回原始標題
-                'video_id': video_id,
-                'duration': full_info.get('duration'),
-                'audio_path': audio_path,  # 返回基於 video_id 的安全路徑
-                'status': 'success'
+                "status": "success",
+                "audio_path": audio_path,
+                "title": video_title,
+                "video_id": video_id,
+                "metadata_path": metadata_path
             }
-                
+        
         except Exception as e:
-            # 添加更詳細的錯誤日誌
-            if "HTTP Error 403" in str(e):
-                logging.error("收到 HTTP 403 Forbidden 錯誤。這通常表示需要 Cookie 或 IP 被限制。")
-                if not self.cookie_file_path:
-                    logging.warning("未提供 Cookie 檔案路徑。")
-                elif not os.path.exists(self.cookie_file_path):
-                    logging.warning(f"提供的 Cookie 檔案 {self.cookie_file_path} 不存在。")
-            logging.error(f"下載影片時出錯詳情: {e}", exc_info=True)
+            logging.error(f"下載影片時發生錯誤: {str(e)}")
+            self.progress_callback("下載", 100, f"下載失敗: {str(e)}")
             return {
-                'status': 'error',
-                'message': f"下載失敗: {str(e)}"  # 提供更清晰的錯誤來源
+                "status": "error",
+                "message": f"下載影片時發生錯誤: {str(e)}"
             }
 
     def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
         """
-        使用 OpenAI Whisper API 轉錄音訊
+        將音訊檔案轉錄為文字
         
         參數:
-            audio_path (str): 音訊檔案路徑 (應基於 video_id)
-            
+            audio_path (str): 音訊檔案路徑
         返回:
             Dict: 包含轉錄結果的字典
         """
+        self.progress_callback("轉錄", 1, "準備轉錄音訊...")
+        
         try:
-            self.progress_callback("轉錄", 35, "準備進行語音轉文字...")
+            # 檢查檔案是否存在
+            if not os.path.isfile(audio_path):
+                raise FileNotFoundError(f"找不到音訊檔案: {audio_path}")
             
-            if not os.path.exists(audio_path):
-                raise FileNotFoundError(f"音訊文件不存在: {audio_path}")
-
-            # --- 從安全路徑中提取 video_id 作為檔名基礎 --- 
+            # 檢查檔案大小和長度
+            file_size = os.path.getsize(audio_path) / (1024 * 1024)  # MB
+            self.progress_callback("轉錄", 5, f"音訊檔案大小: {file_size:.2f} MB")
+            
+            # 計算估計的轉錄所需時間（用於顯示進度估計）
+            estimated_minutes = file_size / 10  # 10MB 音訊檔案約需 1 分鐘轉錄
+            self.progress_callback("轉錄", 8, f"估計轉錄時間: 約 {estimated_minutes:.1f} 分鐘")
+            
+            # 嘗試使用 ffprobe 獲取更精確的音訊時長
             try:
-                # 假設路徑是 .../audio/VIDEO_ID/VIDEO_ID.mp3
-                video_id = os.path.basename(os.path.dirname(audio_path))
-                if not video_id or video_id == 'audio':  # 做一些基本檢查
-                    # 如果上層目錄不是 ID，嘗試從檔名提取
-                    video_id = os.path.basename(audio_path).rsplit('.', 1)[0]
-                logging.info(f"從音訊路徑提取用於命名的 Video ID: {video_id}")
-            except Exception:
-                # 如果提取失敗，使用時間戳作為後備
-                logging.warning(f"無法從音訊路徑 {audio_path} 提取 Video ID，將使用時間戳命名轉錄稿")
-                video_id = f"transcript_{int(time.time())}"
-
-            # 檢查音訊文件大小
-            file_size = os.path.getsize(audio_path)
-            logging.info(f"音訊檔案大小: {file_size / (1024 * 1024):.2f} MB")
+                self.progress_callback("轉錄", 10, "分析音訊時長...")
+                ffprobe_cmd = [
+                    self.ffprobe_path, '-v', 'quiet', '-print_format', 'json',
+                    '-show_format', audio_path
+                ]
+                probe_output = subprocess.check_output(ffprobe_cmd).decode('utf-8')
+                audio_duration = float(json.loads(probe_output)['format']['duration'])
+                self.progress_callback("轉錄", 13, f"音訊時長: {audio_duration:.2f} 秒")
+            except Exception as e:
+                logging.warning(f"無法使用 ffprobe 獲取音訊時長: {e}")
+                self.progress_callback("轉錄", 15, "無法獲取精確音訊時長，繼續處理...")
+                audio_duration = None
             
-            # 如果檔案大於25MB，需要分割
-            max_size = 25 * 1024 * 1024  # 25MB 轉換為字節
-            
-            if file_size > max_size:
-                self.progress_callback("轉錄", 40, "音訊檔案超過25MB，正在分割...")
-                logging.info("音訊檔案超過25MB，將進行分割")
-                # 分割音訊
-                split_files = self.split_audio_ffmpeg(audio_path)
-                if not split_files: # Check if splitting failed
-                    raise RuntimeError("音訊分割失敗，無法繼續轉錄")
-                
-                # 分別轉錄每個分割檔案
-                transcripts = []
-                
-                for i, split_file in enumerate(split_files):
-                    progress_percentage = 45 + int(45 * i / len(split_files))
-                    self.progress_callback(
-                        "轉錄", progress_percentage, 
-                        f"正在轉錄第 {i+1}/{len(split_files)} 部分..."
-                    )
-                    logging.info(f"轉錄分割檔案 {i+1}/{len(split_files)}: {split_file}")
-                    
-                    with open(split_file, "rb") as audio_file:
-                        transcript = self.openai_client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=audio_file
-                        )
-                        
-                    transcripts.append(transcript.text)
-                    
-                # 合併所有轉錄內容
-                full_transcript = " ".join(transcripts)
-                
-                # 清理分割檔案
-                for split_file in split_files:
-                    if not self.keep_audio and os.path.exists(split_file):
-                        try:
-                            os.remove(split_file)
-                        except OSError as e:
-                            logging.warning(f"清理分割檔案 {split_file} 時出錯: {e}")
+            # 音訊檔案處理
+            if audio_duration and audio_duration > 1800:  # 超過 30 分鐘
+                self.progress_callback("轉錄", 18, "音訊較長，將分段轉錄...")
+                segments = self.split_audio_ffmpeg(audio_path)
+                # 這裡應該增加更精細的分段轉錄進度報告...
             else:
-                self.progress_callback("轉錄", 40, "正在進行語音轉文字...")
-                # 直接轉錄完整音訊
-                with open(audio_path, "rb") as audio_file:
-                    transcript = self.openai_client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=audio_file
-                    )
+                segments = [audio_path]
+                self.progress_callback("轉錄", 18, "準備轉錄完整音訊...")
+            
+            # 初始化進度
+            self.progress_callback("轉錄", 22, "開始轉錄...")
+            
+            # 如果有效的 OpenAI API key，使用 OpenAI 轉錄
+            if self.api_keys.get('openai') and self.openai_client:
+                logging.info("使用 OpenAI 的 Whisper 轉錄音訊...")
+                self.progress_callback("轉錄", 25, "使用 OpenAI Whisper 模型轉錄中...")
+                
+                combined_transcript = ""
+                
+                # 處理多個音訊段
+                for idx, segment_path in enumerate(segments):
+                    segment_start_percent = 25 + (idx / len(segments)) * 55
+                    self.progress_callback("轉錄", int(segment_start_percent), 
+                                          f"轉錄第 {idx+1}/{len(segments)} 段音訊...")
                     
-                full_transcript = transcript.text
+                    # 轉錄前發送另一個進度更新
+                    self.progress_callback("轉錄", int(segment_start_percent + 2), 
+                                          f"準備第 {idx+1}/{len(segments)} 段音訊檔案...")
+                    
+                    with open(segment_path, "rb") as audio_file:
+                        # 嘗試進行轉錄
+                        try:
+                            # 發送轉錄請求前再次更新進度
+                            self.progress_callback("轉錄", int(segment_start_percent + 5), 
+                                                  f"發送第 {idx+1}/{len(segments)} 段音訊至 Whisper API...")
+                            
+                            transcript_response = self.openai_client.audio.transcriptions.create(
+                                model=self.WHISPER_MODEL,
+                                file=audio_file
+                            )
+                            combined_transcript += transcript_response.text + "\n\n"
+                            
+                            segment_complete = 25 + ((idx+1) / len(segments)) * 55
+                            self.progress_callback("轉錄", int(segment_complete), 
+                                                 f"已完成第 {idx+1}/{len(segments)} 段音訊轉錄")
+                            
+                        except Exception as e:
+                            error_msg = f"轉錄第 {idx+1} 段音訊時出錯: {str(e)}"
+                            logging.error(error_msg)
+                            self.progress_callback("轉錄", int(segment_complete), error_msg)
+                            if idx == 0:  # 如果第一段就失敗，整個轉錄就失敗
+                                raise
                 
-            # 如果不保留音訊，則刪除原始音訊檔案
-            if not self.keep_audio and os.path.exists(audio_path):
-                 try:
-                     os.remove(audio_path)
-                 except OSError as e:
-                     logging.warning(f"清理原始音訊檔案 {audio_path} 時出錯: {e}")
+                # 完成轉錄
+                self.progress_callback("轉錄", 85, "轉錄完成，處理文本...")
                 
-            # --- 保存轉錄結果，使用 video_id 命名 ---
-            transcript_dir = self.directories['transcripts']
-            os.makedirs(transcript_dir, exist_ok=True) # Ensure dir exists
-            transcript_path = os.path.join(transcript_dir, f"{video_id}.txt")
-            logging.info(f"轉錄稿將儲存至: {transcript_path}")
-            
-            with open(transcript_path, "w", encoding="utf-8") as f:
-                f.write(full_transcript)
+                # 保存轉錄文本
+                transcript_dir = os.path.dirname(audio_path).replace('/audio/', '/transcript/')
+                os.makedirs(transcript_dir, exist_ok=True)
+                transcript_basename = os.path.basename(audio_path).split('.')[0]
+                transcript_path = os.path.join(transcript_dir, f"{transcript_basename}_transcript.txt")
                 
-            self.progress_callback("轉錄", 70, "語音轉文字完成")
+                self.progress_callback("轉錄", 90, "保存轉錄文本中...")
                 
-            return {
-                'transcript': full_transcript,
-                'transcript_path': transcript_path,
-                'status': 'success'
-            }
-            
+                with open(transcript_path, 'w', encoding='utf-8') as f:
+                    f.write(combined_transcript)
+                
+                self.progress_callback("轉錄", 95, f"轉錄文本已保存至 {transcript_path}")
+                
+                # 清理
+                if not self.keep_audio and audio_path != segments[0]:
+                    self.cleanup(audio_path)
+                
+                self.progress_callback("轉錄", 100, "轉錄階段完成!")
+                
+                return {
+                    "status": "success",
+                    "transcript": combined_transcript,
+                    "transcript_path": transcript_path
+                }
+            else:
+                error_msg = "未提供有效的 OpenAI API 金鑰，無法使用 Whisper 模型轉錄。"
+                logging.error(error_msg)
+                self.progress_callback("轉錄", 100, error_msg)
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
+                
         except Exception as e:
-            logging.error(f"轉錄音訊時出錯: {e}", exc_info=True)  # 添加 exc_info
+            error_msg = f"轉錄音訊時發生錯誤: {str(e)}"
+            logging.error(error_msg)
+            self.progress_callback("轉錄", 100, error_msg)
             return {
-                'status': 'error',
-                'message': f"轉錄失敗: {str(e)}"  # 提供更清晰的錯誤來源
+                "status": "error",
+                "message": error_msg
             }
 
     def prepare_summary_prompt(self, transcript: str, video_title: str = "") -> str:
@@ -669,113 +679,160 @@ class YouTubeSummarizer:
 
     def generate_summary(self, transcript: str, video_title: str = "") -> Dict[str, Any]:
         """
-        生成轉錄文本的摘要
+        根據轉錄文本生成影片摘要
         
         參數:
             transcript (str): 轉錄文本
-            video_title (str): 視頻標題，用於提供上下文
-            
+            video_title (str): 影片標題
         返回:
             Dict: 包含摘要結果的字典
         """
-        summary = None
-        model_used = "N/A"
-        try:
-            self.progress_callback("摘要", 75, "正在分析文字內容...")
-            
-            # 準備摘要提示
-            prompt = self.prepare_summary_prompt(transcript, video_title)
-            
-            # 嘗試使用Gemini模型生成摘要（如果可用）
-            if self.api_keys.get('gemini') and genai:
-                self.progress_callback("摘要", 80, "使用Gemini模型生成摘要...")
-                try:
-                    # Ensure genai is configured before use in this context
-                    # (Assuming __init__ handles the initial configuration)
-                    gemini_model = genai.GenerativeModel(self.GEMINI_MODEL)
-                    gemini_response = gemini_model.generate_content(prompt)
-                    
-                    summary = gemini_response.text
-                    model_used = self.GEMINI_MODEL
-                    
-                    self.progress_callback("摘要", 90, "Gemini摘要生成完成")
-                    logging.info("使用Gemini模型生成摘要成功")
-                except Exception as gemini_error:
-                    logging.warning(f"Gemini摘要生成失敗，將使用OpenAI作為後備: {gemini_error}")
-                    self.progress_callback("摘要", 80, "Gemini生成失敗，轉用OpenAI...")
-                    # 如果Gemini失敗，設置 summary 為 None 以觸發 OpenAI
-                    summary = None 
-            else:
-                logging.info("Gemini API 金鑰未提供或模組不可用，將使用 OpenAI")
-                
-            # 如果Gemini不可用或失敗，使用OpenAI (確保 OpenAI Client 已初始化)
-            if not summary and self.openai_client:
-                self.progress_callback("摘要", 85, "使用OpenAI模型生成摘要...")
-                response = self.openai_client.chat.completions.create(
-                    model=self.DEFAULT_OPENAI_MODEL,
-                    messages=[
-                        {"role": "system", "content": "你是一位專業的內容分析師，負責分析影片轉錄文本並提供洞察和摘要。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.2
-                )
-                
-                summary = response.choices[0].message.content
-                model_used = self.DEFAULT_OPENAI_MODEL
-                self.progress_callback("摘要", 90, "OpenAI摘要生成完成")
-            elif not self.openai_client:
-                 logging.error("OpenAI client 未初始化，無法生成摘要")
-                 raise ValueError("OpenAI client 未初始化")
-            elif summary: # If summary was generated by Gemini
-                logging.info("摘要已由 Gemini 生成，跳過 OpenAI")
-                 
-            # --- 保存摘要結果 --- 
-            # 確保摘要目錄存在
-            summary_dir = self.directories['summaries']
-            os.makedirs(summary_dir, exist_ok=True)
-
-            # 使用時間戳或影片ID命名 (這裡使用時間戳避免潛在檔名衝突)
-            timestamp = int(time.time())
-            # Try to get video_id from audio_path if possible, else use timestamp
-            video_id_for_name = f"summary_{timestamp}" # Default name
-            # We need a way to get the video_id here. Let's assume it's not easily available
-            # and stick to timestamp for the summary filename for now.
-            filename = f"{video_id_for_name}.md" 
-            summary_path = os.path.join(summary_dir, filename)
-            
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write(summary if summary else "摘要生成失敗") # Write even on failure
-                
-            self.progress_callback("摘要", 95, "正在整理結果...")
-                
+        if not transcript or len(transcript.strip()) < 50:
+            error_msg = "轉錄文本太短或為空，無法生成摘要"
+            logging.error(error_msg)
+            self.progress_callback("摘要", 100, error_msg)
             return {
-                'summary': summary,
-                'summary_path': summary_path,
-                'model_used': model_used,
-                'status': 'success' if summary else 'error'
+                "status": "error",
+                "message": error_msg
+            }
+        
+        self.progress_callback("摘要", 5, "準備摘要生成...")
+            
+        # 準備提示詞
+        self.progress_callback("摘要", 10, "構建摘要提示詞...")
+        prompt = self.prepare_summary_prompt(transcript, video_title)
+        self.progress_callback("摘要", 12, "提示詞準備完成")
+        
+        # 選擇使用的模型
+        model_used = None
+        
+        try:
+            # 按偏好順序嘗試使用可用模型
+            if self.model_preference == 'auto' or self.model_preference == 'gemini':
+                # 嘗試使用 Gemini 模型
+                if self.api_keys.get('gemini') and 'genai' in globals():
+                    self.progress_callback("摘要", 15, "嘗試使用 Google Gemini 模型...")
+                    try:
+                        logging.info(f"使用 Google Gemini 模型 ({self.GEMINI_MODEL})...")
+                        self.progress_callback("摘要", 18, f"使用 Google Gemini 模型 ({self.GEMINI_MODEL})...")
+                        
+                        # 設置模型
+                        self.progress_callback("摘要", 20, "初始化 Gemini 模型...")
+                        genai_model = genai.GenerativeModel(self.GEMINI_MODEL)
+                        
+                        # 構建生成配置
+                        self.progress_callback("摘要", 22, "設置 Gemini 生成參數...")
+                        generation_config = {
+                            "temperature": 0.3,
+                            "top_p": 0.95,
+                            "top_k": 40,
+                            "max_output_tokens": 4096,
+                        }
+                        
+                        self.progress_callback("摘要", 25, "準備向 Gemini 發送請求...")
+                        self.progress_callback("摘要", 30, "向 Gemini 發送請求...")
+                        
+                        # 發送請求
+                        response = genai_model.generate_content(
+                            prompt,
+                            generation_config=generation_config
+                        )
+                        
+                        self.progress_callback("摘要", 50, "Gemini 已回應，開始處理回應...")
+                        self.progress_callback("摘要", 60, "處理 Gemini 回應中...")
+                        self.progress_callback("摘要", 70, "提取 Gemini 文本內容...")
+                        
+                        # 提取結果
+                        summary = response.text
+                        model_used = self.GEMINI_MODEL
+                        
+                        self.progress_callback("摘要", 80, "Gemini 摘要生成成功!")
+                        
+                    except Exception as e:
+                        logging.warning(f"使用 Gemini 生成摘要失敗: {e}")
+                        self.progress_callback("摘要", 22, f"Gemini 模型失敗: {str(e)}")
+                        self.progress_callback("摘要", 25, "正在切換到 OpenAI 模型...")
+                        model_used = None  # 重置，以便嘗試下一個模型
+            
+            # 如果 Gemini 失敗或不可用，嘗試使用 OpenAI
+            if not model_used and (self.model_preference == 'auto' or self.model_preference == 'openai'):
+                if self.api_keys.get('openai') and self.openai_client:
+                    self.progress_callback("摘要", 28, "準備使用 OpenAI 模型...")
+                    self.progress_callback("摘要", 30, "使用 OpenAI 模型...")
+                    
+                    # 確定要使用的最終模型
+                    openai_model = self.DEFAULT_OPENAI_MODEL
+                    self.progress_callback("摘要", 32, f"使用 OpenAI {openai_model} 模型...")
+                    
+                    # 構建訊息
+                    self.progress_callback("摘要", 35, "構建 OpenAI 請求...")
+                    messages = [
+                        {"role": "system", "content": "你是一位專業的影片內容分析師，你的工作是根據轉錄文本生成清晰、結構化的影片摘要。"},
+                        {"role": "user", "content": prompt}
+                    ]
+                    
+                    self.progress_callback("摘要", 38, "準備向 OpenAI 發送請求...")
+                    self.progress_callback("摘要", 40, "向 OpenAI 發送請求...")
+                    
+                    # 呼叫 OpenAI API
+                    response = self.openai_client.chat.completions.create(
+                        model=openai_model,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=2000
+                    )
+                    
+                    self.progress_callback("摘要", 60, "OpenAI 已回應...")
+                    self.progress_callback("摘要", 70, "處理 OpenAI 回應中...")
+                    self.progress_callback("摘要", 80, "提取摘要內容...")
+                    
+                    # 提取結果
+                    summary = response.choices[0].message.content
+                    model_used = openai_model
+                    
+                    self.progress_callback("摘要", 85, "OpenAI 摘要生成成功!")
+            
+            # 如果所有嘗試都失敗
+            if not model_used:
+                error_msg = "無法使用任何可用模型生成摘要"
+                logging.error(error_msg)
+                self.progress_callback("摘要", 100, error_msg)
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
+            
+            # 保存摘要
+            self.progress_callback("摘要", 90, "準備儲存摘要結果...")
+            if video_title:
+                safe_title = ''.join(c for c in video_title if c.isalnum() or c in ' _-')[:50]
+                summary_path = os.path.join(self.directories['summaries'], f"{safe_title}_summary.md")
+                
+                try:
+                    self.progress_callback("摘要", 92, "儲存摘要檔案中...")
+                    with open(summary_path, 'w', encoding='utf-8') as f:
+                        f.write(f"# {video_title}\n\n{summary}")
+                    self.progress_callback("摘要", 95, f"摘要已保存至 {summary_path}")
+                except Exception as e:
+                    logging.warning(f"保存摘要檔案失敗: {e}")
+                    self.progress_callback("摘要", 95, f"警告: 摘要檔案保存失敗，但處理已完成")
+            
+            self.progress_callback("摘要", 98, "最終處理中...")
+            self.progress_callback("摘要", 100, "摘要生成階段完成!")
+            
+            return {
+                "status": "success",
+                "summary": summary,
+                "model_used": model_used
             }
             
         except Exception as e:
-            logging.error(f"生成摘要時出錯: {e}", exc_info=True)
-            # Attempt to save error state to file if possible
-            try:
-                summary_dir = self.directories['summaries']
-                os.makedirs(summary_dir, exist_ok=True)
-                timestamp = int(time.time())
-                filename = f"summary_error_{timestamp}.txt"
-                error_path = os.path.join(summary_dir, filename)
-                with open(error_path, "w", encoding="utf-8") as f:
-                    f.write(f"生成摘要時發生錯誤: {str(e)}\n")
-                    import traceback
-                    traceback.print_exc(file=f)
-            except Exception as save_err:
-                logging.error(f"儲存摘要錯誤狀態失敗: {save_err}")
-            
+            error_msg = f"生成摘要時發生錯誤: {str(e)}"
+            logging.error(error_msg)
+            self.progress_callback("摘要", 100, error_msg)
             return {
-                'status': 'error',
-                'message': f"摘要生成失敗: {str(e)}",
-                'summary': None, # Ensure summary is None on error
-                'model_used': model_used, # Report model attempted
+                "status": "error",
+                "message": error_msg
             }
 
     def cleanup(self, audio_path):
@@ -792,7 +849,7 @@ class YouTubeSummarizer:
                             logging.info(f"已刪除原始音訊: {audio_path}")
                         except OSError as e:
                             logging.warning(f"刪除原始音訊 {audio_path} 失敗: {e}")
-                    
+                
                     # Also clean up segment files if they exist
                     if audio_path:
                         base_path = audio_path.rsplit('.', 1)[0]
@@ -820,9 +877,9 @@ class YouTubeSummarizer:
 def run_summary_process(url: str, keep_audio: bool = False, 
                         progress_callback: Optional[Callable] = None, 
                         cookie_file_path: Optional[str] = None,
-                        openai_api_key: Optional[str] = None, # Added openai_api_key parameter
-                        google_api_key: Optional[str] = None  # Added google_api_key parameter
-                        ) -> Dict[str, Any]:
+                        openai_api_key: Optional[str] = None,
+                        google_api_key: Optional[str] = None,
+                        model_type: str = 'auto') -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
     
@@ -833,11 +890,12 @@ def run_summary_process(url: str, keep_audio: bool = False,
         cookie_file_path (Optional[str]): YouTube cookies.txt 檔案的路徑
         openai_api_key (Optional[str]): 從前端傳遞的 OpenAI API 金鑰
         google_api_key (Optional[str]): 從前端傳遞的 Google API 金鑰
+        model_type (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
     返回:
         Dict: 包含處理結果的字典
     """
     start_time = time.time()
-    summarizer = None # Initialize summarizer to None
+    summarizer = None
     download_result = None
     transcribe_result = None
     summary_result = None
@@ -849,14 +907,21 @@ def run_summary_process(url: str, keep_audio: bool = False,
             api_keys_to_pass['openai'] = openai_api_key
         if google_api_key:
             api_keys_to_pass['gemini'] = google_api_key
+            
         # 如果前端沒傳，Summarizer 的 __init__ 會嘗試從環境變數讀取
-        logging.info(f"準備初始化 Summarizer (OpenAI Key Provided: {bool(openai_api_key)}, Gemini Key Provided: {bool(google_api_key)})")
+        logging.info(
+            f"準備初始化 Summarizer (OpenAI: {bool(openai_api_key)}, "
+            f"Gemini: {bool(google_api_key)})"
+        )
 
         # 初始化 YouTubeSummarizer，傳遞 cookie 路徑和 API 金鑰
-        summarizer = YouTubeSummarizer(api_keys=api_keys_to_pass, # Pass the collected keys
-                                     keep_audio=keep_audio, 
-                                     progress_callback=progress_callback,
-                                     cookie_file_path=cookie_file_path)
+        summarizer = YouTubeSummarizer(
+            api_keys=api_keys_to_pass,
+            keep_audio=keep_audio, 
+            progress_callback=progress_callback,
+            cookie_file_path=cookie_file_path,
+            model_preference=model_type
+        )
         
         # 下載影片並提取音訊
         download_result = summarizer.download_video(url)
@@ -919,6 +984,7 @@ def run_summary_process(url: str, keep_audio: bool = False,
         return {
             'title': video_title,
             'summary': summary_result.get('summary'),
+            'transcript': transcript,  # 添加轉錄文本到返回結果
             'model_used': summary_result.get('model_used'),
             'processing_time': processing_time,
             'status': 'success'
