@@ -55,7 +55,7 @@ MODEL_CONFIG = {
         "cached_input": 0.55,   # $0.55 per 1M tokens
         "output": 4.40          # $4.40 per 1M tokens
     },
-    "gemini-2.5-pro-exp-03-25": {
+    "gemini-2.5-flash-preview-05-20": {
         "display_name": "Gemini 2.5 Pro Experimental",
         "input": 0.00,          # 價格待定
         "cached_input": 0.00,   # 價格待定
@@ -121,7 +121,7 @@ def refine_transcript_gemini(text, api_key, temperature=0.5, context=""):
     """
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-pro-exp-03-25')
+        model = genai.GenerativeModel('gemini-2.5-flash-preview-05-20')
         
         # 準備提示詞
         prompt = f"""

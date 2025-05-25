@@ -49,7 +49,7 @@ load_dotenv()
 class YouTubeSummarizer:
     # 定義模型名稱常數
     WHISPER_MODEL = "gpt-4o-transcribe"
-    GEMINI_MODEL = 'gemini-2.5-pro-exp-03-25'
+    GEMINI_MODEL = 'gemini-2.5-flash-preview-05-20'
     OPENAI_FALLBACK_MODEL = "gpt-3.5-turbo"  # Updated fallback model
     DEFAULT_OPENAI_MODEL = "gpt-3.5-turbo"   # Updated default model
 

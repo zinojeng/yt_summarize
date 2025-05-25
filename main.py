@@ -722,7 +722,7 @@ async def home(request: Request):
                     
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
                     <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
-                    <p class="api-note" style="color: #2a9d8f;"><strong>最新更新:</strong> 現在使用 Google 最新的 gemini-2.5-pro-exp-03-25 模型!</p>
+                    <p class="api-note" style="color: #2a9d8f;"><strong>最新更新:</strong> 現在使用 Google 最新的 gemini-2.5-flash-preview-05-20 模型!</p>
                     
                     <div class="form-group">
                         <label for="modelType">優先使用模型:</label>
