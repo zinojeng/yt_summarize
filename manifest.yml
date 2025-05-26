@@ -1,0 +1,6 @@
+applications:
+- name: yt-summarize
+  command: python start.py
+  buildpack: python
+  env:
+    PYTHONUNBUFFERED: true 

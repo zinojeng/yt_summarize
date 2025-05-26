@@ -1,0 +1,4 @@
+ffmpeg
+ffprobe
+python3-dev
+build-essential 
