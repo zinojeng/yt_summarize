@@ -26,6 +26,7 @@ class Task:
     google_api_key: str = ""
     model_type: str = "auto"
     gemini_model: str = "gemini-2.5-flash-preview-05-20"
+    openai_model: str = "gpt-4o"
     progress: Dict[str, Any] = field(default_factory=dict)
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -43,6 +44,7 @@ class Task:
             "keep_audio": self.keep_audio,
             "model_type": self.model_type,
             "gemini_model": self.gemini_model,
+            "openai_model": self.openai_model,
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
@@ -111,7 +113,8 @@ class TaskManager:
     
     def create_task(self, task_id: str, url: str, keep_audio: bool = False, 
                    openai_api_key: str = "", google_api_key: str = "", 
-                   model_type: str = "auto", gemini_model: str = "gemini-2.5-flash-preview-05-20") -> Task:
+                   model_type: str = "auto", gemini_model: str = "gemini-2.5-flash-preview-05-20",
+                   openai_model: str = "gpt-4o") -> Task:
         """創建新任務"""
         with self.lock:
             task = Task(
@@ -123,7 +126,8 @@ class TaskManager:
                 openai_api_key=openai_api_key,
                 google_api_key=google_api_key,
                 model_type=model_type,
-                gemini_model=gemini_model
+                gemini_model=gemini_model,
+                openai_model=openai_model
             )
             self.tasks[task_id] = task
             logger.info(f"創建新任務: {task_id}")

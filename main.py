@@ -130,6 +130,7 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
         gemini_model = data.get("gemini_model", "gemini-2.5-flash-preview-05-20")
+        openai_model = data.get("openai_model", "gpt-4o")
         
         # 驗證 URL
         url_validation = SecurityValidator.validate_youtube_url(url)
@@ -162,7 +163,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             openai_api_key=openai_validation["sanitized_key"],
             google_api_key=google_validation["sanitized_key"],
             model_type=model_type,
-            gemini_model=gemini_model
+            gemini_model=gemini_model,
+            openai_model=openai_model
         )
         
         # 啟動背景處理任務
@@ -174,7 +176,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             openai_api_key=openai_validation["sanitized_key"], 
             google_api_key=google_validation["sanitized_key"],
             model_type=model_type,
-            gemini_model=gemini_model
+            gemini_model=gemini_model,
+            openai_model=openai_model
         )
         
         return {"task_id": task_id}
@@ -191,7 +194,8 @@ async def process_video(
     openai_api_key: str, 
     google_api_key: str = None,
     model_type: str = "auto",
-    gemini_model: str = "gemini-2.5-flash-preview-05-20"
+    gemini_model: str = "gemini-2.5-flash-preview-05-20",
+    openai_model: str = "gpt-4o"
 ):
     try:
         # 更新任務狀態
@@ -235,7 +239,8 @@ async def process_video(
                 openai_api_key=openai_api_key,
                 google_api_key=google_api_key,
                 model_type=model_type,
-                gemini_model=gemini_model
+                gemini_model=gemini_model,
+                openai_model=openai_model
             )
         
         try:
@@ -974,7 +979,7 @@ async def home(request: Request):
                 <div class="api-settings">
                     <h3>API 金鑰設定</h3>
                     <input type="password" id="openaiKey" name="openai_api_key" placeholder="OpenAI API 金鑰 (必填)">
-                    <p class="api-note">需要 OpenAI API 金鑰才能執行音訊轉錄（使用 Whisper 模型）。即使選擇 Gemini 摘要，仍需要此金鑰。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
+                    <p class="api-note">需要 OpenAI API 金鑰才能執行音訊轉錄（使用 GPT-4o-transcribe 模型）。即使選擇 Gemini 摘要，仍需要此金鑰。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
                     
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
                     <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
@@ -993,6 +998,19 @@ async def home(request: Request):
                         <select id="geminiModel" name="gemini_model">
                             <option value="gemini-2.5-flash-preview-05-20">Gemini 2.5 Flash Preview (快速)</option>
                             <option value="gemini-2.5-pro-preview-06-05">Gemini 2.5 Pro Preview (高品質)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group" id="openaiModelGroup" style="display: none;">
+                        <label for="openaiModel">OpenAI 模型選擇:</label>
+                        <select id="openaiModel" name="openai_model">
+                            <option value="gpt-4o">GPT-4o (旗艦聊天模型)</option>
+                            <option value="o1">o1 (推理模型)</option>
+                            <option value="o1-preview">o1-preview (推理模型預覽)</option>
+                            <option value="o1-mini">o1-mini (推理模型 - 快速)</option>
+                            <option value="o3">o3 (推理模型)</option>
+                            <option value="o3-mini">o3-mini (推理模型 - 快速)</option>
+                            <option value="o4-mini">o4-mini (推理模型 - 快速)</option>
                         </select>
                     </div>
                     
@@ -1127,20 +1145,25 @@ async def home(request: Request):
                 checkCookiesStatus();
                 
                 // 模型選擇處理
-                function updateGeminiModelVisibility() {
+                function updateModelVisibility() {
                     const selectedModel = $("#modelType").val();
                     if (selectedModel === "gemini") {
                         $("#geminiModelGroup").show();
+                        $("#openaiModelGroup").hide();
+                    } else if (selectedModel === "openai") {
+                        $("#geminiModelGroup").hide();
+                        $("#openaiModelGroup").show();
                     } else {
                         $("#geminiModelGroup").hide();
+                        $("#openaiModelGroup").hide();
                     }
                 }
                 
                 // 頁面加載時檢查初始狀態
-                updateGeminiModelVisibility();
+                updateModelVisibility();
                 
                 // 監聽選擇變更
-                $("#modelType").change(updateGeminiModelVisibility);
+                $("#modelType").change(updateModelVisibility);
                 
                 // Cookies 文件上傳處理
                 $("#cookiesFile").change(function() {
@@ -1193,6 +1216,9 @@ async def home(request: Request):
                     // 顯示處理中的UI
                     showProcessingUI();
                     
+                    // 獲取 OpenAI 模型選擇
+                    const openaiModel = $("#openaiModel").val() || "gpt-4o";
+                    
                     // 創建請求數據
                     const requestData = {
                         url: youtubeUrl,
@@ -1200,7 +1226,8 @@ async def home(request: Request):
                         openai_api_key: openaiApiKey,
                         google_api_key: googleApiKey,
                         model_type: modelType,
-                        gemini_model: geminiModel
+                        gemini_model: geminiModel,
+                        openai_model: openaiModel
                     };
                     
                     // 發送AJAX請求

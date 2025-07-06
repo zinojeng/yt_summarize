@@ -50,8 +50,11 @@ class YouTubeSummarizer:
     # 定義模型名稱常數
     WHISPER_MODEL = "gpt-4o-transcribe"
     GEMINI_MODEL = 'gemini-2.5-flash-preview-05-20'
-    OPENAI_FALLBACK_MODEL = "gpt-3.5-turbo"  # Updated fallback model
-    DEFAULT_OPENAI_MODEL = "gpt-3.5-turbo"   # Updated default model
+    OPENAI_FALLBACK_MODEL = "gpt-4o"  # Updated fallback model
+    DEFAULT_OPENAI_MODEL = "gpt-4o"   # Updated default model
+    
+    # o-series 推理模型列表
+    O_SERIES_MODELS = {"o1", "o1-preview", "o1-mini", "o3", "o3-mini", "o4-mini"}
 
     def __init__(self, 
                  api_keys: Dict[str, str] = None, 
@@ -60,7 +63,8 @@ class YouTubeSummarizer:
                  progress_callback: Optional[Callable] = None,
                  cookie_file_path: Optional[str] = None,
                  model_preference: str = 'auto',
-                 gemini_model: str = 'gemini-2.5-flash-preview-05-20'):
+                 gemini_model: str = 'gemini-2.5-flash-preview-05-20',
+                 openai_model: str = 'gpt-4o'):
         """
         初始化 YouTube 摘要器
         
@@ -71,6 +75,8 @@ class YouTubeSummarizer:
             progress_callback (Callable): 進度回調函數，接收階段名稱、百分比和訊息
             cookie_file_path (Optional[str]): YouTube cookies.txt 檔案的路徑
             model_preference (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
+            gemini_model (str): 使用的 Gemini 模型名稱
+            openai_model (str): 使用的 OpenAI 模型名稱
         """
         self.api_keys = api_keys or {}
         if 'openai' not in self.api_keys:
@@ -82,6 +88,7 @@ class YouTubeSummarizer:
         self.keep_audio = keep_audio
         self.model_preference = model_preference
         self.gemini_model = gemini_model
+        self.openai_model = openai_model
         self.cookie_file_path = cookie_file_path
         if self.cookie_file_path and not os.path.exists(self.cookie_file_path):
             logging.warning(f"提供的 Cookie 檔案路徑不存在: {self.cookie_file_path}")
@@ -149,6 +156,10 @@ class YouTubeSummarizer:
             # 'ffmpeg_location': self.ffmpeg_path if self.ffmpeg_path != 'ffmpeg' else None
         }
         self.pbar = None
+
+    def is_o_series_model(self, model_name: str) -> bool:
+        """檢查是否為 o-series 推理模型"""
+        return model_name in self.O_SERIES_MODELS
 
     def setup_directories(self):
         """建立必要的目錄結構"""
@@ -730,7 +741,7 @@ class YouTubeSummarizer:
                             "temperature": 0.3,
                             "top_p": 0.95,
                             "top_k": 40,
-                            "max_output_tokens": 4096,
+                            "max_output_tokens": 16384,
                         }
                         
                         self.progress_callback("摘要", 25, "準備向 Gemini 發送請求...")
@@ -765,36 +776,81 @@ class YouTubeSummarizer:
                     self.progress_callback("摘要", 30, "使用 OpenAI 模型...")
                     
                     # 確定要使用的最終模型
-                    openai_model = self.DEFAULT_OPENAI_MODEL
+                    openai_model = self.openai_model
                     self.progress_callback("摘要", 32, f"使用 OpenAI {openai_model} 模型...")
+                    
+                    # 檢查是否為 o-series 推理模型
+                    is_o_series = self.is_o_series_model(openai_model)
                     
                     # 構建訊息
                     self.progress_callback("摘要", 35, "構建 OpenAI 請求...")
-                    messages = [
-                        {"role": "system", "content": "你是一位專業的影片內容分析師，你的工作是根據轉錄文本生成清晰、結構化的影片摘要。"},
-                        {"role": "user", "content": prompt}
-                    ]
                     
-                    self.progress_callback("摘要", 38, "準備向 OpenAI 發送請求...")
+                    if is_o_series:
+                        # o-series 模型不支援 system message，直接使用 user message
+                        messages = [
+                            {"role": "user", "content": f"你是一位專業的影片內容分析師，你的工作是根據轉錄文本生成清晰、結構化的影片摘要。\n\n{prompt}"}
+                        ]
+                        self.progress_callback("摘要", 38, f"準備向 OpenAI {openai_model} (推理模型) 發送請求...")
+                    else:
+                        # 一般模型支援 system message
+                        messages = [
+                            {"role": "system", "content": "你是一位專業的影片內容分析師，你的工作是根據轉錄文本生成清晰、結構化的影片摘要。"},
+                            {"role": "user", "content": prompt}
+                        ]
+                        self.progress_callback("摘要", 38, f"準備向 OpenAI {openai_model} 發送請求...")
+                    
                     self.progress_callback("摘要", 40, "向 OpenAI 發送請求...")
                     
-                    # 呼叫 OpenAI API
-                    response = self.openai_client.chat.completions.create(
-                        model=openai_model,
-                        messages=messages,
-                        temperature=0.3,
-                        max_tokens=2000
-                    )
+                    # 呼叫 OpenAI API - 使用不同的參數集
+                    try:
+                        if is_o_series:
+                            # o-series 模型不支援 temperature, top_p 等參數
+                            logging.info(f"使用 o-series 模型 {openai_model} 進行推理...")
+                            response = self.openai_client.chat.completions.create(
+                                model=openai_model,
+                                messages=messages
+                            )
+                        else:
+                            # 一般模型支援完整參數集
+                            logging.info(f"使用一般模型 {openai_model} 進行摘要...")
+                            response = self.openai_client.chat.completions.create(
+                                model=openai_model,
+                                messages=messages,
+                                temperature=0.3,
+                                max_tokens=2000
+                            )
+                    except Exception as api_error:
+                        logging.error(f"OpenAI API 呼叫失敗 ({openai_model}): {api_error}")
+                        self.progress_callback("摘要", 50, f"API 呼叫失敗: {str(api_error)}")
+                        raise api_error
                     
                     self.progress_callback("摘要", 60, "OpenAI 已回應...")
-                    self.progress_callback("摘要", 70, "處理 OpenAI 回應中...")
-                    self.progress_callback("摘要", 80, "提取摘要內容...")
+                    
+                    if is_o_series:
+                        self.progress_callback("摘要", 70, f"處理 {openai_model} 推理回應中...")
+                        # o-series 模型可能有推理內容，但我們只需要最終答案
+                        self.progress_callback("摘要", 80, "提取推理結果...")
+                    else:
+                        self.progress_callback("摘要", 70, "處理 OpenAI 回應中...")
+                        self.progress_callback("摘要", 80, "提取摘要內容...")
                     
                     # 提取結果
                     summary = response.choices[0].message.content
-                    model_used = openai_model
                     
-                    self.progress_callback("摘要", 85, "OpenAI 摘要生成成功!")
+                    # 檢查摘要內容是否有效
+                    if not summary or summary.strip() == "":
+                        error_msg = f"{openai_model} 返回空的摘要內容"
+                        logging.warning(error_msg)
+                        self.progress_callback("摘要", 85, error_msg)
+                        raise Exception(error_msg)
+                    
+                    model_used = openai_model
+                    logging.info(f"摘要生成成功，使用模型: {openai_model}，內容長度: {len(summary)} 字符")
+                    
+                    if is_o_series:
+                        self.progress_callback("摘要", 85, f"{openai_model} 推理摘要生成成功!")
+                    else:
+                        self.progress_callback("摘要", 85, "OpenAI 摘要生成成功!")
             
             # 如果所有嘗試都失敗
             if not model_used:
@@ -884,7 +940,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
                         openai_api_key: Optional[str] = None,
                         google_api_key: Optional[str] = None,
                         model_type: str = 'auto',
-                        gemini_model: str = 'gemini-2.5-flash-preview-05-20') -> Dict[str, Any]:
+                        gemini_model: str = 'gemini-2.5-flash-preview-05-20',
+                        openai_model: str = 'gpt-4o') -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
     
@@ -896,6 +953,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
         openai_api_key (Optional[str]): 從前端傳遞的 OpenAI API 金鑰
         google_api_key (Optional[str]): 從前端傳遞的 Google API 金鑰
         model_type (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
+        gemini_model (str): 使用的 Gemini 模型名稱
+        openai_model (str): 使用的 OpenAI 模型名稱
     返回:
         Dict: 包含處理結果的字典
     """
@@ -926,7 +985,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
             progress_callback=progress_callback,
             cookie_file_path=cookie_file_path,
             model_preference=model_type,
-            gemini_model=gemini_model
+            gemini_model=gemini_model,
+            openai_model=openai_model
         )
         
         # 下載影片並提取音訊

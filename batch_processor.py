@@ -21,6 +21,7 @@ class BatchRequest:
     google_api_key: str = ""
     model_type: str = "auto"
     gemini_model: str = "gemini-2.5-flash-preview-05-20"
+    openai_model: str = "gpt-4o"
     batch_id: str = ""
 
 @dataclass
@@ -95,7 +96,8 @@ class BatchProcessor:
                 openai_api_key=batch_request.openai_api_key,
                 google_api_key=batch_request.google_api_key,
                 model_type=batch_request.model_type,
-                gemini_model=batch_request.gemini_model
+                gemini_model=batch_request.gemini_model,
+                openai_model=batch_request.openai_model
             )
             batch_status.task_ids.append(task_id)
         
