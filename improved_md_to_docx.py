@@ -208,39 +208,98 @@ class ImprovedMarkdownToDocxConverter:
     def _process_inline_content(self, token: Token, paragraph):
         """處理內聯內容（粗體、斜體等）"""
         if hasattr(token, 'children') and token.children:
-            for child in token.children:
-                self._process_inline_token(child, paragraph)
+            # 使用堆疊來跟踪格式狀態
+            self._process_formatted_children(token.children, paragraph)
         else:
             # 如果沒有子元素，直接添加內容
             if token.content:
                 paragraph.add_run(token.content)
     
+    def _process_formatted_children(self, children, paragraph):
+        """處理格式化的子元素，正確跟踪格式狀態"""
+        format_stack = []
+        current_formats = set()
+        
+        i = 0
+        while i < len(children):
+            token = children[i]
+            
+            if token.type == 'text':
+                # 添加文本，應用當前的所有格式
+                run = paragraph.add_run(token.content)
+                if 'bold' in current_formats:
+                    run.bold = True
+                if 'italic' in current_formats:
+                    run.italic = True
+                if 'strikethrough' in current_formats:
+                    run.font.strike = True
+                if 'code' in current_formats:
+                    run.font.name = 'Consolas'
+                    run.font.size = Pt(10)
+            
+            elif token.type == 'strong_open':
+                current_formats.add('bold')
+                format_stack.append('bold')
+            
+            elif token.type == 'strong_close':
+                if 'bold' in current_formats:
+                    current_formats.remove('bold')
+                if format_stack and format_stack[-1] == 'bold':
+                    format_stack.pop()
+            
+            elif token.type == 'em_open':
+                current_formats.add('italic')
+                format_stack.append('italic')
+            
+            elif token.type == 'em_close':
+                if 'italic' in current_formats:
+                    current_formats.remove('italic')
+                if format_stack and format_stack[-1] == 'italic':
+                    format_stack.pop()
+            
+            elif token.type == 'code_inline':
+                # 行內代碼，直接處理
+                run = paragraph.add_run(token.content)
+                run.font.name = 'Consolas'
+                run.font.size = Pt(10)
+            
+            elif token.type == 's_open':
+                current_formats.add('strikethrough')
+                format_stack.append('strikethrough')
+            
+            elif token.type == 's_close':
+                if 'strikethrough' in current_formats:
+                    current_formats.remove('strikethrough')
+                if format_stack and format_stack[-1] == 'strikethrough':
+                    format_stack.pop()
+            
+            else:
+                # 其他類型的 token，遞歸處理
+                if hasattr(token, 'children') and token.children:
+                    self._process_formatted_children(token.children, paragraph)
+                elif token.content:
+                    run = paragraph.add_run(token.content)
+                    if 'bold' in current_formats:
+                        run.bold = True
+                    if 'italic' in current_formats:
+                        run.italic = True
+                    if 'strikethrough' in current_formats:
+                        run.font.strike = True
+                    if 'code' in current_formats:
+                        run.font.name = 'Consolas'
+                        run.font.size = Pt(10)
+            
+            i += 1
+
     def _process_inline_token(self, token: Token, paragraph):
-        """處理單個內聯 token"""
+        """處理單個內聯 token（已棄用，使用 _process_formatted_children）"""
+        # 保留舊方法以防兼容性問題
         if token.type == 'text':
             paragraph.add_run(token.content)
-        elif token.type == 'strong_open':
-            # 開始粗體，不添加內容
-            pass
-        elif token.type == 'strong_close':
-            # 結束粗體，不添加內容
-            pass
-        elif token.type == 'em_open':
-            # 開始斜體，不添加內容
-            pass
-        elif token.type == 'em_close':
-            # 結束斜體，不添加內容
-            pass
         elif token.type == 'code_inline':
             run = paragraph.add_run(token.content)
             run.font.name = 'Consolas'
             run.font.size = Pt(10)
-        elif token.type == 's_open':
-            # 開始刪除線
-            pass
-        elif token.type == 's_close':
-            # 結束刪除線
-            pass
         else:
             # 處理嵌套的格式化內容
             if hasattr(token, 'children') and token.children:
