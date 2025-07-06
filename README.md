@@ -6,8 +6,12 @@
 
 -   **自動下載 YouTube 影片**：支援多種格式，並自動提取最佳音訊。
 -   **高品質語音轉文字**：使用 OpenAI Whisper 模型進行準確的語音識別。
+-   **多格式文件下載**：
+    -   📄 **Word DOCX 格式** - 完整保留 Markdown 格式轉換
+    -   📝 **Markdown 格式** - 原始摘要格式
+    -   📋 **逐字稿 TXT** - 完整轉錄內容
 -   **智慧摘要生成**：
-    -   優先使用 Google Gemini 模型 (`gemini-2.5-pro-exp-03-25`) 生成摘要。
+    -   優先使用 Google Gemini 模型 (`gemini-2.5-flash-preview-05-20`) 生成摘要。
     -   若 Gemini 不可用或失敗，自動切換至 OpenAI 模型 (`gpt-3.5-turbo`) 作為備用。
     -   生成結構化、重點突出、排版優化的 Markdown 格式摘要。
     -   持續優化的提示工程以提升摘要品質與緊湊度。
@@ -176,18 +180,55 @@
 
 ```
 yt_summarize/
-├── main.py           # FastAPI Web 應用與主程式入口
-├── yt_summarizer.py  # YouTube 影片下載與摘要核心邏輯
-├── run.sh            # 自動更新依賴和啟動腳本
-├── requirements.txt  # 專案依賴套件列表
-├── .env.example      # 環境變數範例檔 (請複製為 .env 並填入)
-├── venv/             # Python 虛擬環境 (自動生成)
-├── audio/            # 音訊文件暫存目錄 (自動生成)
-├── transcripts/      # 轉錄文本保存目錄 (自動生成)
-├── summaries/        # 生成摘要保存目錄 (自動生成)
-├── metadata/         # 影片元數據保存目錄 (自動生成)
-└── README.md         # 本說明文件
+├── main.py                    # FastAPI Web 應用與主程式入口
+├── yt_summarizer.py           # YouTube 影片下載與摘要核心邏輯
+├── improved_md_to_docx.py     # 改進版 Markdown 轉 DOCX 轉換器
+├── md_to_docx_converter.py    # 基礎 Markdown 轉換器
+├── task_manager.py            # 任務管理系統
+├── run.sh                     # 自動更新依賴和啟動腳本
+├── requirements.txt           # 專案依賴套件列表
+├── Dockerfile                 # Docker 容器配置
+├── zeabur.json               # Zeabur 部署配置
+├── test_improved_converter.py # DOCX 轉換功能測試
+├── test_api.py               # API 功能測試
+├── .env.example              # 環境變數範例檔 (請複製為 .env 並填入)
+├── venv/                     # Python 虛擬環境 (自動生成)
+├── audio/                    # 音訊文件暫存目錄 (自動生成)
+├── transcripts/              # 轉錄文本保存目錄 (自動生成)
+├── summaries/                # 生成摘要保存目錄 (自動生成)
+├── metadata/                 # 影片元數據保存目錄 (自動生成)
+└── README.md                 # 本說明文件
 ```
+
+## 🚀 本地運行指南
+
+### 快速啟動
+```bash
+# 1. 安裝依賴
+pip install -r requirements.txt
+
+# 2. 啟動服務器
+python3.11 -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+
+# 3. 在瀏覽器中訪問
+open http://127.0.0.1:8000
+```
+
+### 功能測試
+```bash
+# 測試 DOCX 轉換功能
+python3.11 test_improved_converter.py
+
+# 測試完整 API 流程
+python3.11 test_api.py
+```
+
+### 驗證部署
+應用啟動後應該看到：
+- ✅ 任務管理器成功載入任務
+- ✅ Web 介面可以訪問
+- ✅ DOCX 下載功能正常
+- ✅ 所有 API 端點響應 HTTP 200
 
 ---
 
