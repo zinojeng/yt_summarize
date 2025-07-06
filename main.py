@@ -15,29 +15,68 @@ import logging
 import uuid
 from contextlib import asynccontextmanager  # Added for lifespan
 
+# 導入新的模塊
+from config import AppConfig
+from security import SecurityValidator, CookiesValidator
+from task_manager import task_manager
+from error_handler import ErrorHandler, retry_on_error, RetryConfig
+from batch_processor import batch_processor, BatchRequest
+from utils import SystemChecker, metrics_collector
+
+# 配置日誌
+logging.basicConfig(
+    level=getattr(logging, AppConfig.LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(AppConfig.LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # --- 新增：啟動時處理 Cookie 文件 (移到 app 創建之前) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 在應用程式啟動時執行
+    logger.info("正在啟動應用程式...")
+    
+    # 確保必要的目錄存在
+    AppConfig.ensure_directories()
+    
+    # 處理環境變數中的 Cookie 文件
     cookie_content = os.environ.get("COOKIE_FILE_CONTENT")
     cookie_file_path = "/app/cookies.txt"  # 在容器內的路徑
     if cookie_content:
         try:
             with open(cookie_file_path, "w", encoding="utf-8") as f:
                 f.write(cookie_content)
-            logging.info(f"已成功從環境變數 COOKIE_FILE_CONTENT 寫入 {cookie_file_path}")
+            logger.info(f"已成功從環境變數 COOKIE_FILE_CONTENT 寫入 {cookie_file_path}")
         except Exception as e:
-            logging.error(f"從環境變數寫入 Cookie 文件失敗: {e}")
+            logger.error(f"從環境變數寫入 Cookie 文件失敗: {e}")
     else:
-        logging.info("未找到環境變數 COOKIE_FILE_CONTENT，跳過寫入 Cookie 文件")
+        logger.info("未找到環境變數 COOKIE_FILE_CONTENT，跳過寫入 Cookie 文件")
+    
+    # 載入持久化的任務
+    task_manager.load_tasks_from_file("tasks.json")
+    
     yield
-    # 在應用程式關閉時執行 (如果需要清理)
+    
+    # 在應用程式關閉時執行
+    logger.info("正在關閉應用程式...")
+    
+    # 保存任務到檔案
+    task_manager.save_tasks_to_file("tasks.json")
+    
+    # 關閉任務管理器
+    task_manager.shutdown()
+    
+    # 清理 Cookie 文件
     if os.path.exists(cookie_file_path):
         try:
             os.remove(cookie_file_path)
-            logging.info(f"已清理 Cookie 文件: {cookie_file_path}")
+            logger.info(f"已清理 Cookie 文件: {cookie_file_path}")
         except Exception as e:
-            logging.error(f"清理 Cookie 文件失敗: {e}")
+            logger.error(f"清理 Cookie 文件失敗: {e}")
 # --- 修改結束 ---
 
 # 添加診斷輸出
@@ -69,17 +108,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 創建用於存儲模板的目錄
-templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-os.makedirs(templates_dir, exist_ok=True)
-print(f"模板目錄: {templates_dir}")
-
 # 設置模板
-templates = Jinja2Templates(directory=templates_dir)
-
-# 任務存儲
-# 在生產環境中應該使用更持久的存儲，如數據庫
-tasks: Dict[str, Dict[str, Any]] = {}
+templates = Jinja2Templates(directory=AppConfig.TEMPLATES_DIR)
+print(f"模板目錄: {AppConfig.TEMPLATES_DIR}")
 
 # 定義請求模型
 class SummaryRequest(BaseModel):
@@ -91,35 +122,63 @@ class SummaryRequest(BaseModel):
 # API 端點: 提交摘要請求
 @app.post("/api/summarize")
 async def summarize_video(request: Request, background_tasks: BackgroundTasks):
-    data = await request.json()
-    url = data.get("url")
-    keep_audio = data.get("keep_audio", False)
-    openai_api_key = data.get("openai_api_key")
-    google_api_key = data.get("google_api_key")
-    model_type = data.get("model_type", "auto")  # 接收模型選擇
-    
-    if not url:
-        return {"status": "error", "message": "缺少 YouTube URL"}
-    
-    if not openai_api_key:
-        return {"status": "error", "message": "缺少 OpenAI API 金鑰"}
-    
-    # 生成唯一任務 ID
-    task_id = str(uuid.uuid4())
-    tasks[task_id] = {"id": task_id, "status": "processing", "url": url, "timestamp": time.time()}
-    
-    # 啟動背景處理任務
-    background_tasks.add_task(
-        process_video, 
-        task_id, 
-        url, 
-        keep_audio, 
-        openai_api_key=openai_api_key, 
-        google_api_key=google_api_key,
-        model_type=model_type  # 傳遞模型選擇
-    )
-    
-    return {"task_id": task_id}
+    try:
+        data = await request.json()
+        url = data.get("url")
+        keep_audio = data.get("keep_audio", False)
+        openai_api_key = data.get("openai_api_key")
+        google_api_key = data.get("google_api_key")
+        model_type = data.get("model_type", "auto")
+        
+        # 驗證 URL
+        url_validation = SecurityValidator.validate_youtube_url(url)
+        if not url_validation["valid"]:
+            return {"status": "error", "message": url_validation["error"]}
+        
+        # 驗證 OpenAI API 金鑰
+        openai_validation = SecurityValidator.validate_openai_api_key(openai_api_key)
+        if not openai_validation["valid"]:
+            return {"status": "error", "message": openai_validation["error"]}
+        
+        # 驗證 Google API 金鑰（選填）
+        google_validation = SecurityValidator.validate_google_api_key(google_api_key or "")
+        if not google_validation["valid"]:
+            return {"status": "error", "message": google_validation["error"]}
+        
+        # 檢查同時處理的任務數量
+        task_stats = task_manager.get_task_stats()
+        if task_stats["processing"] >= AppConfig.MAX_CONCURRENT_TASKS:
+            return {"status": "error", "message": "系統繁忙，請稍後再試"}
+        
+        # 生成安全的任務 ID
+        task_id = SecurityValidator.generate_task_id()
+        
+        # 創建任務
+        task = task_manager.create_task(
+            task_id=task_id,
+            url=url_validation["normalized_url"],
+            keep_audio=keep_audio,
+            openai_api_key=openai_validation["sanitized_key"],
+            google_api_key=google_validation["sanitized_key"],
+            model_type=model_type
+        )
+        
+        # 啟動背景處理任務
+        background_tasks.add_task(
+            process_video, 
+            task_id, 
+            url_validation["normalized_url"], 
+            keep_audio, 
+            openai_api_key=openai_validation["sanitized_key"], 
+            google_api_key=google_validation["sanitized_key"],
+            model_type=model_type
+        )
+        
+        return {"task_id": task_id}
+        
+    except Exception as e:
+        logger.error(f"提交摘要請求時發生錯誤: {e}")
+        return {"status": "error", "message": "處理請求時發生錯誤"}
 
 # 背景處理函數
 async def process_video(
@@ -132,72 +191,105 @@ async def process_video(
 ):
     try:
         # 更新任務狀態
-        tasks[task_id]["status"] = "processing"
+        task_manager.update_task_status(task_id, "processing")
+        
+        # 記錄開始時間
+        start_time = time.time()
         
         # 進度更新回調函數
         def progress_callback(stage, percentage, message):
-            if task_id in tasks:
-                tasks[task_id]["progress"] = {
-                    "stage": stage,
-                    "percentage": percentage,
-                    "message": message,
-                    "timestamp": time.time()  # 添加時間戳記，確保每次更新都有變化
-                }
-                # 每次更新進度時記錄日誌，方便調試
-                logging.info(f"進度更新: [{task_id}] {stage} {percentage}% - {message}")
+            # 檢查任務是否已取消
+            if task_manager.is_task_cancelled(task_id):
+                raise Exception("任務已被取消")
+                
+            task_manager.update_task_progress(task_id, stage, percentage, message)
+            logger.info(f"進度更新: [{task_id}] {stage} {percentage}% - {message}")
         
         # 檢查是否有 cookies 文件
         cookie_file_path = None
-        cookies_dir = os.path.join(os.getcwd(), "cookies")
         
         # 檢查多種可能的 cookies 文件名
         possible_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
         for name in possible_names:
-            cookies_path = os.path.join(cookies_dir, name)
+            cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
             if os.path.exists(cookies_path):
                 cookie_file_path = cookies_path
-                logging.info(f"找到 cookies 文件: {cookie_file_path}")
+                logger.info(f"找到 cookies 文件: {cookie_file_path}")
                 break
         
         if not cookie_file_path:
-            logging.info("未找到 cookies 文件，將不使用 cookies")
+            logger.info("未找到 cookies 文件，將不使用 cookies")
         
-        # 調用 YouTubeSummarizer 處理影片
-        result = run_summary_process(
-            url=url,
-            keep_audio=keep_audio,
-            progress_callback=progress_callback,
-            cookie_file_path=cookie_file_path,
-            openai_api_key=openai_api_key,
-            google_api_key=google_api_key,
-            model_type=model_type
-        )
+        # 使用重試機制調用 YouTubeSummarizer 處理影片
+        @retry_on_error(RetryConfig(max_attempts=3, delay=2.0))
+        def process_with_retry():
+            return run_summary_process(
+                url=url,
+                keep_audio=keep_audio,
+                progress_callback=progress_callback,
+                cookie_file_path=cookie_file_path,
+                openai_api_key=openai_api_key,
+                google_api_key=google_api_key,
+                model_type=model_type
+            )
+        
+        try:
+            result = process_with_retry()
+        except Exception as e:
+            # 如果重試後仍然失敗，嘗試優雅降級
+            if ErrorHandler.is_retryable(e):
+                logger.warning(f"處理失敗，嘗試優雅降級: {e}")
+                # 這裡可以實現基本的降級邏輯，例如僅提取音頻或提供基本信息
+                raise e
+            else:
+                raise e
+        
+        # 記錄成功指標
+        processing_time = time.time() - start_time if 'start_time' in locals() else 0
+        metrics_collector.record_request(True, processing_time)
         
         # 更新任務結果
-        tasks[task_id]["status"] = "complete"
-        tasks[task_id]["result"] = result
+        task_manager.update_task_status(task_id, "complete", result=result)
     
     except Exception as e:
-        logging.error(f"處理影片時發生錯誤: {str(e)}")
-        tasks[task_id]["status"] = "error"
-        tasks[task_id]["error"] = str(e)
+        # 記錄詳細錯誤信息
+        ErrorHandler.log_error(e, {
+            "task_id": task_id,
+            "url": url,
+            "model_type": model_type
+        })
+        
+        # 記錄失敗指標
+        processing_time = time.time() - start_time if 'start_time' in locals() else 0
+        metrics_collector.record_request(False, processing_time)
+        
+        error_message = str(e)
+        user_friendly_message = ErrorHandler.get_user_friendly_message(e)
+        
+        if "任務已被取消" in error_message:
+            task_manager.update_task_status(task_id, "cancelled")
+        else:
+            task_manager.update_task_status(task_id, "error", 
+                                          error=user_friendly_message)
 
 # API 端點: 獲取任務狀態
 @app.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):
-    if task_id not in tasks:
+    task = task_manager.get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任務不存在")
     
-    return tasks[task_id]
+    return task.to_dict()
 
 # API 端點: 獲取任務進度
 @app.get("/api/tasks/{task_id}/progress")
 async def get_task_progress(task_id: str):
-    if task_id not in tasks:
+    task = task_manager.get_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任務不存在")
     
     # 獲取當前進度，如果不存在則使用默認值
-    progress = tasks[task_id].get("progress", {})
+    progress = task.progress or {}
     
     # 確保所有必要字段都有有效的默認值
     default_progress = {
@@ -217,19 +309,157 @@ async def get_task_progress(task_id: str):
 # API 端點: 獲取所有任務列表
 @app.get("/api/tasks")
 async def list_tasks():
-    return list(tasks.values())
+    return task_manager.get_all_tasks()
+
+# API 端點: 獲取任務統計
+@app.get("/api/tasks/stats")
+async def get_task_stats():
+    return task_manager.get_task_stats()
+
+# API 端點: 批量處理
+@app.post("/api/batch-summarize")
+async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
+    """批量處理多個 YouTube 影片"""
+    try:
+        data = await request.json()
+        urls = data.get("urls", [])
+        keep_audio = data.get("keep_audio", False)
+        openai_api_key = data.get("openai_api_key")
+        google_api_key = data.get("google_api_key")
+        model_type = data.get("model_type", "auto")
+        
+        if not urls or not isinstance(urls, list):
+            return {"status": "error", "message": "請提供有效的 URL 列表"}
+        
+        if len(urls) > 10:  # 限制批量處理數量
+            return {"status": "error", "message": "批量處理最多支援 10 個影片"}
+        
+        # 驗證 API 金鑰
+        openai_validation = SecurityValidator.validate_openai_api_key(openai_api_key)
+        if not openai_validation["valid"]:
+            return {"status": "error", "message": openai_validation["error"]}
+        
+        google_validation = SecurityValidator.validate_google_api_key(google_api_key or "")
+        if not google_validation["valid"]:
+            return {"status": "error", "message": google_validation["error"]}
+        
+        # 創建批量請求
+        batch_request = BatchRequest(
+            urls=urls,
+            keep_audio=keep_audio,
+            openai_api_key=openai_validation["sanitized_key"],
+            google_api_key=google_validation["sanitized_key"],
+            model_type=model_type
+        )
+        
+        # 創建批量處理任務
+        batch_status = batch_processor.create_batch(batch_request)
+        
+        # 啟動背景處理
+        for task_id in batch_status.task_ids:
+            task = task_manager.get_task(task_id)
+            if task:
+                background_tasks.add_task(
+                    process_video,
+                    task_id,
+                    task.url,
+                    task.keep_audio,
+                    openai_api_key=task.openai_api_key,
+                    google_api_key=task.google_api_key,
+                    model_type=task.model_type
+                )
+        
+        return {
+            "status": "success",
+            "batch_id": batch_status.batch_id,
+            "total_tasks": batch_status.total_tasks,
+            "task_ids": batch_status.task_ids
+        }
+        
+    except Exception as e:
+        logger.error(f"批量處理請求時發生錯誤: {e}")
+        return {"status": "error", "message": ErrorHandler.get_user_friendly_message(e)}
+
+# API 端點: 獲取批量狀態
+@app.get("/api/batch/{batch_id}")
+async def get_batch_status(batch_id: str):
+    """獲取批量處理狀態"""
+    batch_status = batch_processor.get_batch_status(batch_id)
+    if not batch_status:
+        raise HTTPException(status_code=404, detail="批量處理不存在")
+    
+    return {
+        "batch_id": batch_status.batch_id,
+        "total_tasks": batch_status.total_tasks,
+        "completed_tasks": batch_status.completed_tasks,
+        "failed_tasks": batch_status.failed_tasks,
+        "cancelled_tasks": batch_status.cancelled_tasks,
+        "progress_percentage": batch_status.progress_percentage,
+        "is_complete": batch_status.is_complete,
+        "task_ids": batch_status.task_ids
+    }
+
+# API 端點: 取消批量處理
+@app.post("/api/batch/{batch_id}/cancel")
+async def cancel_batch(batch_id: str):
+    """取消批量處理"""
+    if batch_processor.cancel_batch(batch_id):
+        return {"status": "success", "message": "批量處理已取消"}
+    else:
+        return {"status": "error", "message": "無法取消批量處理"}
+
+# API 端點: 獲取批量結果
+@app.get("/api/batch/{batch_id}/results")
+async def get_batch_results(batch_id: str):
+    """獲取批量處理結果"""
+    results = batch_processor.get_batch_results(batch_id)
+    if not results:
+        raise HTTPException(status_code=404, detail="批量處理結果不存在")
+    
+    return {"batch_id": batch_id, "results": results}
+
+# API 端點: 獲取所有批量處理
+@app.get("/api/batches")
+async def list_batches():
+    """獲取所有批量處理列表"""
+    return batch_processor.get_all_batches()
+
+# API 端點: 系統健康檢查
+@app.get("/api/health")
+async def health_check():
+    """系統健康檢查"""
+    return SystemChecker.get_health_status()
+
+# API 端點: 系統指標
+@app.get("/api/metrics")
+async def get_metrics():
+    """獲取系統指標"""
+    system_metrics = metrics_collector.get_metrics()
+    task_stats = task_manager.get_task_stats()
+    
+    return {
+        "system": system_metrics,
+        "tasks": task_stats,
+        "timestamp": datetime.now().isoformat()
+    }
+
+# API 端點: 系統信息
+@app.get("/api/system-info")
+async def get_system_info():
+    """獲取系統信息"""
+    return SystemChecker.get_system_info()
 
 # 新增: 取消任務端點
 @app.post("/api/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    if task_id not in tasks:
+    if not task_manager.get_task(task_id):
         raise HTTPException(status_code=404, detail="任務不存在")
     
-    if tasks[task_id]["status"] in ["pending", "processing"]:
-        tasks[task_id]["is_cancelled"] = True
-        return {"status": "success", "message": "已發送取消請求"}
+    if task_manager.cancel_task(task_id):
+        return {"status": "success", "message": "已取消任務"}
     else:
-        return {"status": "failed", "message": f"無法取消處理完成的任務 (當前狀態: {tasks[task_id]['status']})"}
+        task = task_manager.get_task(task_id)
+        return {"status": "failed", "message": f"無法取消處理完成的任務 (當前狀態: {task.status})"}
 
 # Web 前端: 首頁
 @app.get("/", response_class=HTMLResponse)
@@ -1300,72 +1530,54 @@ async def home(request: Request):
 async def upload_cookies(cookies_file: UploadFile = File(...)):
     """上傳 cookies.txt 文件"""
     try:
-        # 檢查文件類型
-        if not cookies_file.filename.endswith('.txt'):
-            return {"status": "error", "message": "請上傳 .txt 格式的 cookies 文件"}
+        # 驗證文件上傳
+        file_validation = SecurityValidator.validate_file_upload(
+            cookies_file.filename, 
+            cookies_file.size or 0
+        )
+        if not file_validation["valid"]:
+            return {"status": "error", "message": file_validation["error"]}
+        
+        # 讀取文件內容
+        content = await cookies_file.read()
+        content_str = content.decode('utf-8')
+        
+        # 驗證 cookies 文件內容
+        content_validation = CookiesValidator.validate_cookies_content(content_str)
+        if not content_validation["valid"]:
+            return {"status": "error", "message": content_validation["error"]}
         
         # 保存 cookies 文件
-        cookies_dir = os.path.join(os.path.dirname(__file__), "cookies")
-        os.makedirs(cookies_dir, exist_ok=True)
+        cookies_path = os.path.join(AppConfig.COOKIES_DIR, "cookies.txt")
         
-        cookies_path = os.path.join(cookies_dir, "cookies.txt")
+        with open(cookies_path, "w", encoding="utf-8") as f:
+            f.write(content_str)
         
-        # 讀取並保存文件內容
-        content = await cookies_file.read()
-        with open(cookies_path, "wb") as f:
-            f.write(content)
+        # 清理 cookies 文件
+        CookiesValidator.sanitize_cookies_file(cookies_path)
         
-        # 驗證 cookies 文件格式
-        if not validate_cookies_file(cookies_path):
-            os.remove(cookies_path)  # 刪除無效文件
-            return {"status": "error", "message": "無效的 cookies 文件格式，請確保文件包含 YouTube 相關的 cookies"}
+        logger.info(f"Cookies 文件上傳成功: {cookies_path}")
         
         return {
             "status": "success", 
             "message": "Cookies 文件上傳成功！現在可以嘗試下載會員內容。",
-            "path": cookies_path
+            "entries_count": content_validation["entries_count"]
         }
         
     except Exception as e:
+        logger.error(f"上傳 cookies 時發生錯誤: {e}")
         return {"status": "error", "message": f"上傳失敗: {str(e)}"}
 
-def validate_cookies_file(file_path):
-    """驗證 cookies 文件格式"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            
-        # 檢查是否包含 YouTube 相關的 cookies
-        youtube_indicators = ['youtube.com', '.youtube.com', 'VISITOR_INFO1_LIVE', 'YSC']
-        
-        has_youtube_cookies = any(indicator in content for indicator in youtube_indicators)
-        
-        # 檢查基本的 cookies 格式
-        lines = content.strip().split('\n')
-        valid_format = False
-        for line in lines:
-            if line.strip() and not line.startswith('#'):
-                parts = line.split('\t')
-                if len(parts) >= 6:  # 標準 cookies.txt 格式至少有 6 個欄位
-                    valid_format = True
-                    break
-        
-        return has_youtube_cookies and valid_format
-    except Exception as e:
-        logging.error(f"驗證 cookies 文件時出錯: {e}")
-        return False
 
 # 檢查 cookies 狀態端點
 @app.get("/api/cookies-status")
 async def get_cookies_status():
     """檢查當前 cookies 文件狀態"""
-    cookies_dir = os.path.join(os.path.dirname(__file__), "cookies")
-    
     # 檢查多種可能的 cookies 文件名（與 process_video 保持一致）
     possible_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
     
     for name in possible_names:
-        cookies_path = os.path.join(cookies_dir, name)
+        cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
         if os.path.exists(cookies_path):
             try:
                 # 獲取文件修改時間
@@ -1393,24 +1605,24 @@ async def get_cookies_status():
 @app.delete("/api/cookies")
 async def delete_cookies():
     """刪除上傳的 cookies 文件"""
-    cookies_dir = os.path.join(os.path.dirname(__file__), "cookies")
-    
     # 檢查並刪除所有可能的 cookies 文件
     possible_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
     deleted_files = []
     
     try:
         for name in possible_names:
-            cookies_path = os.path.join(cookies_dir, name)
+            cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
             if os.path.exists(cookies_path):
                 os.remove(cookies_path)
                 deleted_files.append(name)
+                logger.info(f"已刪除 cookies 文件: {name}")
         
         if deleted_files:
             return {"status": "success", "message": f"已刪除 cookies 文件: {', '.join(deleted_files)}"}
         else:
             return {"status": "error", "message": "找不到 cookies 文件"}
     except Exception as e:
+        logger.error(f"刪除 cookies 文件時發生錯誤: {e}")
         return {"status": "error", "message": f"刪除失敗: {str(e)}"}
 
 # 檢查 FFmpeg 是否可用
@@ -1448,12 +1660,12 @@ if __name__ == "__main__":
             print("警告: 未找到 yt-dlp，無法下載 YouTube 影片")
             print("請安裝 yt-dlp: pip install yt-dlp")
         
-        # 確保模板目錄存在
-        if not os.path.exists(templates_dir):
-            os.makedirs(templates_dir)
+        # 確保必要目錄存在
+        AppConfig.ensure_directories()
             
         print("正在啟動 uvicorn 服務器...")
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, log_level="debug")
+        uvicorn.run("main:app", host=AppConfig.HOST, port=AppConfig.PORT, 
+                   reload=AppConfig.DEBUG, log_level="info")
         print("服務器已關閉")
     except Exception as e:
         print(f"啟動服務器失敗: {e}")
