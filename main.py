@@ -546,6 +546,17 @@ async def cancel_task(task_id: str):
         task = task_manager.get_task(task_id)
         return {"status": "failed", "message": f"無法取消處理完成的任務 (當前狀態: {task.status})"}
 
+# 健康檢查端點 (對 Zeabur 部署很有用)
+@app.get("/health")
+async def health_check():
+    """健康檢查端點，確認服務正常運行"""
+    return {
+        "status": "healthy",
+        "service": "YouTube Summarizer",
+        "tasks_loaded": len(task_manager.tasks),
+        "version": "1.0.0"
+    }
+
 # Web 前端: 首頁
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):

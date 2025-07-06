@@ -28,9 +28,8 @@ COPY . .
 # 創建必要的目錄
 RUN mkdir -p audio metadata transcript summary logs cookies
 
-# 暴露 FastAPI 預設會使用的端口 (雖然 Zeabur 可能會覆蓋)
-# Zeabur 會自動偵測並使用 $PORT 環境變數
-EXPOSE 8000
+# 暴露 Zeabur 常用的端口
+EXPOSE 8080
 
 # 定義容器啟動時運行的命令
 # 使用 Zeabur 提供的 $PORT 環境變數
