@@ -2,7 +2,7 @@ import sys
 from fastapi import (
     FastAPI, BackgroundTasks, Request, HTTPException, UploadFile, File
 )
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -22,6 +22,7 @@ from task_manager import task_manager
 from error_handler import ErrorHandler, retry_on_error, RetryConfig
 from batch_processor import batch_processor, BatchRequest
 from utils import SystemChecker, metrics_collector
+from improved_md_to_docx import convert_markdown_to_docx_improved as convert_markdown_to_docx
 
 # 配置日誌
 logging.basicConfig(
@@ -325,6 +326,77 @@ async def list_tasks():
 @app.get("/api/tasks/stats")
 async def get_task_stats():
     return task_manager.get_task_stats()
+
+# API 端點: 下載任務摘要為 DOCX 格式
+@app.get("/api/download-docx/{task_id}")
+async def download_docx(task_id: str):
+    """下載任務的摘要為 Word DOCX 格式"""
+    try:
+        logger.info(f"開始處理 DOCX 下載請求: {task_id}")
+        
+        # 獲取任務
+        task = task_manager.get_task(task_id)
+        if not task:
+            logger.error(f"任務不存在: {task_id}")
+            raise HTTPException(status_code=404, detail="任務不存在")
+        
+        logger.info(f"任務狀態: {task.status}")
+        
+        # 檢查任務狀態
+        if task.status != "complete":
+            logger.error(f"任務尚未完成: {task_id}, 狀態: {task.status}")
+            raise HTTPException(status_code=400, detail="任務尚未完成")
+        
+        # 檢查摘要內容
+        if not task.result or not task.result.get("summary"):
+            logger.error(f"任務沒有可用的摘要內容: {task_id}")
+            raise HTTPException(status_code=400, detail="任務沒有可用的摘要內容")
+        
+        # 獲取摘要內容和標題
+        summary_content = task.result.get("summary", "")
+        title = task.result.get("title", "YouTube_摘要")
+        
+        logger.info(f"摘要內容長度: {len(summary_content)}, 標題: {title}")
+        
+        # 清理標題用於檔名
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+        if not safe_title:
+            safe_title = "YouTube_摘要"
+        
+        # 轉換為 DOCX
+        try:
+            logger.info("開始轉換 DOCX...")
+            docx_stream = convert_markdown_to_docx(summary_content, title)
+            logger.info(f"DOCX 轉換成功，大小: {len(docx_stream.getvalue())} 字節")
+        except Exception as e:
+            logger.error(f"轉換 DOCX 失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"轉換 DOCX 格式失敗: {str(e)}")
+        
+        # 設置檔名
+        filename = f"{safe_title}_摘要.docx"
+        
+        # URL 編碼檔名以處理中文字符
+        import urllib.parse
+        encoded_filename = urllib.parse.quote(filename, safe='')
+        
+        logger.info(f"準備返回 DOCX 文件: {filename}")
+        
+        # 返回 DOCX 文件
+        return StreamingResponse(
+            iter([docx_stream.getvalue()]),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"下載 DOCX 時發生錯誤: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"下載失敗: {str(e)}")
 
 # API 端點: 批量處理
 @app.post("/api/batch-summarize")
@@ -1077,7 +1149,8 @@ async def home(request: Request):
                 <h3 id="title"></h3>
                 <div id="summary" class="summary-content"></div>
                 <div class="button-group">
-                    <button id="download-btn" class="btn" style="display: none;">下載摘要</button>
+                    <button id="download-btn" class="btn" style="display: none;">下載摘要 (MD)</button>
+                    <button id="download-docx-btn" class="btn" style="display: none;">下載 Word 文檔</button>
                     <button id="download-transcript-btn" class="btn" style="display: none;">下載逐字稿</button>
                 </div>
             </div>
@@ -1451,12 +1524,20 @@ async def home(request: Request):
                     
                     // 顯示下載按鈕
                     $("#download-btn").show();
+                    $("#download-docx-btn").show();
                     $("#download-transcript-btn").show();
                     
                     // 下載摘要按鈕點擊處理
                     $("#download-btn").off("click").on("click", function(e) {
                         e.preventDefault();
                         downloadAsFile(summaryContent, (result.title || "summary"), "md", "text/markdown");
+                        return false;
+                    });
+                    
+                    // 下載 Word 文檔按鈕點擊處理
+                    $("#download-docx-btn").off("click").on("click", function(e) {
+                        e.preventDefault();
+                        downloadDocx(taskData.id);
                         return false;
                     });
                     
@@ -1507,6 +1588,32 @@ async def home(request: Request):
                     } catch (error) {
                         console.error("下載檔案失敗:", error);
                         alert("下載失敗: " + error.message);
+                    }
+                }
+                
+                // DOCX 下載函數
+                function downloadDocx(taskId) {
+                    try {
+                        // 創建下載連結
+                        const downloadUrl = `/api/download-docx/${taskId}`;
+                        
+                        // 創建臨時 a 標籤進行下載
+                        const a = document.createElement("a");
+                        a.href = downloadUrl;
+                        a.style.display = "none";
+                        
+                        // 加入到文檔，點擊後移除
+                        document.body.appendChild(a);
+                        a.click();
+                        
+                        // 清理資源
+                        setTimeout(function() {
+                            document.body.removeChild(a);
+                        }, 100);
+                        
+                    } catch (error) {
+                        console.error("下載 DOCX 失敗:", error);
+                        alert("下載 Word 文檔失敗: " + error.message);
                     }
                 }
                 
