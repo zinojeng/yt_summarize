@@ -59,7 +59,8 @@ class YouTubeSummarizer:
                  directories: Dict[str, str] = None, 
                  progress_callback: Optional[Callable] = None,
                  cookie_file_path: Optional[str] = None,
-                 model_preference: str = 'auto'):
+                 model_preference: str = 'auto',
+                 gemini_model: str = 'gemini-2.5-flash-preview-05-20'):
         """
         初始化 YouTube 摘要器
         
@@ -80,6 +81,7 @@ class YouTubeSummarizer:
             raise ValueError("需要 OpenAI API 金鑰")
         self.keep_audio = keep_audio
         self.model_preference = model_preference
+        self.gemini_model = gemini_model
         self.cookie_file_path = cookie_file_path
         if self.cookie_file_path and not os.path.exists(self.cookie_file_path):
             logging.warning(f"提供的 Cookie 檔案路徑不存在: {self.cookie_file_path}")
@@ -715,12 +717,12 @@ class YouTubeSummarizer:
                 if self.api_keys.get('gemini') and 'genai' in globals():
                     self.progress_callback("摘要", 15, "嘗試使用 Google Gemini 模型...")
                     try:
-                        logging.info(f"使用 Google Gemini 模型 ({self.GEMINI_MODEL})...")
-                        self.progress_callback("摘要", 18, f"使用 Google Gemini 模型 ({self.GEMINI_MODEL})...")
+                        logging.info(f"使用 Google Gemini 模型 ({self.gemini_model})...")
+                        self.progress_callback("摘要", 18, f"使用 Google Gemini 模型 ({self.gemini_model})...")
                         
                         # 設置模型
                         self.progress_callback("摘要", 20, "初始化 Gemini 模型...")
-                        genai_model = genai.GenerativeModel(self.GEMINI_MODEL)
+                        genai_model = genai.GenerativeModel(self.gemini_model)
                         
                         # 構建生成配置
                         self.progress_callback("摘要", 22, "設置 Gemini 生成參數...")
@@ -746,7 +748,7 @@ class YouTubeSummarizer:
                         
                         # 提取結果
                         summary = response.text
-                        model_used = self.GEMINI_MODEL
+                        model_used = self.gemini_model
                         
                         self.progress_callback("摘要", 80, "Gemini 摘要生成成功!")
                         
@@ -881,7 +883,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
                         cookie_file_path: Optional[str] = None,
                         openai_api_key: Optional[str] = None,
                         google_api_key: Optional[str] = None,
-                        model_type: str = 'auto') -> Dict[str, Any]:
+                        model_type: str = 'auto',
+                        gemini_model: str = 'gemini-2.5-flash-preview-05-20') -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
     
@@ -922,7 +925,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
             keep_audio=keep_audio, 
             progress_callback=progress_callback,
             cookie_file_path=cookie_file_path,
-            model_preference=model_type
+            model_preference=model_type,
+            gemini_model=gemini_model
         )
         
         # 下載影片並提取音訊

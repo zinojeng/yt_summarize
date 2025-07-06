@@ -129,6 +129,7 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
+        gemini_model = data.get("gemini_model", "gemini-2.5-flash-preview-05-20")
         
         # 驗證 URL
         url_validation = SecurityValidator.validate_youtube_url(url)
@@ -160,7 +161,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             keep_audio=keep_audio,
             openai_api_key=openai_validation["sanitized_key"],
             google_api_key=google_validation["sanitized_key"],
-            model_type=model_type
+            model_type=model_type,
+            gemini_model=gemini_model
         )
         
         # 啟動背景處理任務
@@ -171,7 +173,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             keep_audio, 
             openai_api_key=openai_validation["sanitized_key"], 
             google_api_key=google_validation["sanitized_key"],
-            model_type=model_type
+            model_type=model_type,
+            gemini_model=gemini_model
         )
         
         return {"task_id": task_id}
@@ -187,7 +190,8 @@ async def process_video(
     keep_audio: bool, 
     openai_api_key: str, 
     google_api_key: str = None,
-    model_type: str = "auto"
+    model_type: str = "auto",
+    gemini_model: str = "gemini-2.5-flash-preview-05-20"
 ):
     try:
         # 更新任務狀態
@@ -230,7 +234,8 @@ async def process_video(
                 cookie_file_path=cookie_file_path,
                 openai_api_key=openai_api_key,
                 google_api_key=google_api_key,
-                model_type=model_type
+                model_type=model_type,
+                gemini_model=gemini_model
             )
         
         try:
@@ -327,6 +332,7 @@ async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
+        gemini_model = data.get("gemini_model", "gemini-2.5-flash-preview-05-20")
         
         if not urls or not isinstance(urls, list):
             return {"status": "error", "message": "請提供有效的 URL 列表"}
@@ -349,7 +355,8 @@ async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
             keep_audio=keep_audio,
             openai_api_key=openai_validation["sanitized_key"],
             google_api_key=google_validation["sanitized_key"],
-            model_type=model_type
+            model_type=model_type,
+            gemini_model=gemini_model
         )
         
         # 創建批量處理任務
@@ -366,7 +373,8 @@ async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
                     task.keep_audio,
                     openai_api_key=task.openai_api_key,
                     google_api_key=task.google_api_key,
-                    model_type=task.model_type
+                    model_type=task.model_type,
+                    gemini_model=task.gemini_model
                 )
         
         return {
@@ -966,11 +974,10 @@ async def home(request: Request):
                 <div class="api-settings">
                     <h3>API 金鑰設定</h3>
                     <input type="password" id="openaiKey" name="openai_api_key" placeholder="OpenAI API 金鑰 (必填)">
-                    <p class="api-note">需要 OpenAI API 金鑰才能執行摘要生成。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
+                    <p class="api-note">需要 OpenAI API 金鑰才能執行音訊轉錄（使用 Whisper 模型）。即使選擇 Gemini 摘要，仍需要此金鑰。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
                     
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
                     <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
-                    <p class="api-note" style="color: #2a9d8f;"><strong>最新更新:</strong> 現在使用 Google 最新的 gemini-2.5-flash-preview-05-20 模型!</p>
                     
                     <div class="form-group">
                         <label for="modelType">優先使用模型:</label>
@@ -978,6 +985,14 @@ async def home(request: Request):
                             <option value="auto">自動 (根據可用性)</option>
                             <option value="openai">OpenAI (GPT)</option>
                             <option value="gemini">Google (Gemini)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group" id="geminiModelGroup" style="display: none;">
+                        <label for="geminiModel">Gemini 模型選擇:</label>
+                        <select id="geminiModel" name="gemini_model">
+                            <option value="gemini-2.5-flash-preview-05-20">Gemini 2.5 Flash Preview (快速)</option>
+                            <option value="gemini-2.5-pro-preview-06-05">Gemini 2.5 Pro Preview (高品質)</option>
                         </select>
                     </div>
                     
@@ -1111,6 +1126,22 @@ async def home(request: Request):
                 // 檢查 cookies 狀態
                 checkCookiesStatus();
                 
+                // 模型選擇處理
+                function updateGeminiModelVisibility() {
+                    const selectedModel = $("#modelType").val();
+                    if (selectedModel === "gemini") {
+                        $("#geminiModelGroup").show();
+                    } else {
+                        $("#geminiModelGroup").hide();
+                    }
+                }
+                
+                // 頁面加載時檢查初始狀態
+                updateGeminiModelVisibility();
+                
+                // 監聽選擇變更
+                $("#modelType").change(updateGeminiModelVisibility);
+                
                 // Cookies 文件上傳處理
                 $("#cookiesFile").change(function() {
                     const file = this.files[0];
@@ -1146,6 +1177,7 @@ async def home(request: Request):
                     const openaiApiKey = $("#openaiKey").val();
                     const googleApiKey = $("#googleKey").val();
                     const modelType = $("#modelType").val();
+                    const geminiModel = $("#geminiModel").val();
                     
                     // 檢查必填項
                     if (!youtubeUrl) {
@@ -1167,7 +1199,8 @@ async def home(request: Request):
                         keep_audio: keepAudio,
                         openai_api_key: openaiApiKey,
                         google_api_key: googleApiKey,
-                        model_type: modelType
+                        model_type: modelType,
+                        gemini_model: geminiModel
                     };
                     
                     // 發送AJAX請求
