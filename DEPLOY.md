@@ -54,23 +54,59 @@ Zeabur 會自動偵測到 `Dockerfile` 並使用 Docker 部署。
 
 ### 4. 疑難排解
 
-#### 首頁空白問題
-如果首頁顯示空白，請檢查：
+#### 首頁空白問題診斷流程
 
-1. **端口設定**: 確保 Service Port 設為 `8080`
-2. **環境變數**: 確認 `PORT=8080` 已設定
-3. **健康檢查**: 先測試 `/health` 端點是否正常
+如果首頁顯示空白，按以下順序檢查：
 
-#### API 測試命令
+**步驟 1: 基本服務檢查**
 ```bash
-# 健康檢查
+# 1. 健康檢查 (必須先通過)
 curl https://your-app.zeabur.app/health
 
-# 主頁 (應返回 HTML)
-curl https://your-app.zeabur.app/
-
-# API 狀態
+# 2. 簡單 API 測試
 curl https://your-app.zeabur.app/api/cookies-status
+```
+
+**步驟 2: 根路由檢查**
+```bash
+# 3. 檢查根路由返回內容
+curl -v https://your-app.zeabur.app/
+
+# 應該返回 HTML 內容，而不是 404 或空響應
+```
+
+**步驟 3: 如果依然空白，使用簡化版本**
+
+1. 將 `Dockerfile` 中的啟動命令改為：
+   ```dockerfile
+   CMD uvicorn main_simple:app --host 0.0.0.0 --port $PORT
+   ```
+
+2. 重新部署，測試簡化版本：
+   ```bash
+   curl https://your-app.zeabur.app/test
+   # 應返回: {"message": "Hello Zeabur!", "status": "working"}
+   ```
+
+**步驟 4: 常見問題檢查**
+- **端口設定**: 確保 Service Port 設為 `8080`
+- **環境變數**: 確認 `PORT=8080` 已設定
+- **依賴問題**: 檢查 Zeabur 構建日誌是否有錯誤
+- **記憶體限制**: 確保有足夠的 RAM (建議 512MB+)
+
+#### 快速診斷命令組合
+```bash
+# 完整診斷腳本
+echo "=== Zeabur 部署診斷 ==="
+echo "1. 健康檢查:"
+curl -s https://your-app.zeabur.app/health | jq .
+
+echo -e "\n2. 根路由檢查:"
+curl -s -w "HTTP Status: %{http_code}\nContent Length: %{size_download}\n" \
+     -o /dev/null https://your-app.zeabur.app/
+
+echo -e "\n3. API 端點檢查:"
+curl -s https://your-app.zeabur.app/api/cookies-status | jq .
 ```
 
 ### 5. 功能驗證
