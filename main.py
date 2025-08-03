@@ -217,14 +217,25 @@ async def process_video(
         # 檢查是否有 cookies 文件
         cookie_file_path = None
         
-        # 檢查多種可能的 cookies 文件名
-        possible_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
-        for name in possible_names:
-            cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
-            if os.path.exists(cookies_path):
-                cookie_file_path = cookies_path
-                logger.info(f"找到 cookies 文件: {cookie_file_path}")
-                break
+        # 檢查 cookies 目錄中的任何 .txt 文件
+        if os.path.exists(AppConfig.COOKIES_DIR):
+            # 尋找所有 .txt 文件
+            txt_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                        if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+            
+            if txt_files:
+                # 優先使用特定名稱的文件
+                priority_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
+                for name in priority_names:
+                    if name in txt_files:
+                        cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, name)
+                        logger.info(f"找到優先 cookies 文件: {cookie_file_path}")
+                        break
+                
+                # 如果沒有優先文件，使用第一個找到的 .txt 文件
+                if not cookie_file_path and txt_files:
+                    cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, txt_files[0])
+                    logger.info(f"找到 cookies 文件: {cookie_file_path}")
         
         if not cookie_file_path:
             logger.info("未找到 cookies 文件，將不使用 cookies")
@@ -1725,8 +1736,22 @@ async def upload_cookies(cookies_file: UploadFile = File(...)):
         if not content_validation["valid"]:
             return {"status": "error", "message": content_validation["error"]}
         
-        # 保存 cookies 文件
-        cookies_path = os.path.join(AppConfig.COOKIES_DIR, "cookies.txt")
+        # 保存 cookies 文件（使用原始文件名）
+        safe_filename = os.path.basename(cookies_file.filename)
+        if not safe_filename.endswith('.txt'):
+            safe_filename = 'cookies.txt'
+        
+        # 清理現有的 cookies 文件
+        existing_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                         if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+        for old_file in existing_files:
+            try:
+                os.remove(os.path.join(AppConfig.COOKIES_DIR, old_file))
+                logger.info(f"刪除舊的 cookies 文件: {old_file}")
+            except Exception as e:
+                logger.warning(f"刪除舊 cookies 文件失敗: {e}")
+        
+        cookies_path = os.path.join(AppConfig.COOKIES_DIR, safe_filename)
         
         with open(cookies_path, "w", encoding="utf-8") as f:
             f.write(content_str)
@@ -1751,12 +1776,15 @@ async def upload_cookies(cookies_file: UploadFile = File(...)):
 @app.get("/api/cookies-status")
 async def get_cookies_status():
     """檢查當前 cookies 文件狀態"""
-    # 檢查多種可能的 cookies 文件名（與 process_video 保持一致）
-    possible_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
-    
-    for name in possible_names:
-        cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
-        if os.path.exists(cookies_path):
+    # 檢查 cookies 目錄中的任何 .txt 文件
+    if os.path.exists(AppConfig.COOKIES_DIR):
+        txt_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                    if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+        
+        if txt_files:
+            # 使用第一個找到的 .txt 文件
+            name = txt_files[0]
+            cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
             try:
                 # 獲取文件修改時間
                 mtime = os.path.getmtime(cookies_path)
@@ -1783,14 +1811,16 @@ async def get_cookies_status():
 @app.delete("/api/cookies")
 async def delete_cookies():
     """刪除上傳的 cookies 文件"""
-    # 檢查並刪除所有可能的 cookies 文件
-    possible_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
     deleted_files = []
     
     try:
-        for name in possible_names:
-            cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
-            if os.path.exists(cookies_path):
+        # 刪除所有 .txt 文件
+        if os.path.exists(AppConfig.COOKIES_DIR):
+            txt_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                        if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+            
+            for name in txt_files:
+                cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
                 os.remove(cookies_path)
                 deleted_files.append(name)
                 logger.info(f"已刪除 cookies 文件: {name}")

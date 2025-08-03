@@ -48,11 +48,13 @@ yt-dlp --cookies-from-browser firefox --print-to-file cookies.txt ""
 4. 系統會自動上傳並驗證
 
 ### 方法二：手動放置文件
-1. 將 cookies.txt 文件放在項目的 `cookies/` 目錄下
+1. 將 cookies 文件放在項目的 `cookies/` 目錄下
 2. 支援的文件名：
-   - `cookies.txt`
-   - `youtube_cookies.txt`
-   - `yt_cookies.txt`
+   - **任何 `.txt` 文件**（例如：`www.youtube.com_cookies (5).txt`）
+   - 優先識別標準名稱：
+     - `cookies.txt`
+     - `youtube_cookies.txt`
+     - `yt_cookies.txt`
 
 ## ✅ 驗證 Cookies 狀態
 
