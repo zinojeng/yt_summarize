@@ -10,28 +10,32 @@ from typing import Dict, Any, Optional, Callable
 import yt_dlp
 
 # 自動安裝並導入 google 模組
-try:
-    import google.generativeai as genai
-except ImportError:
-    print("找不到 google.generativeai 模組，嘗試自動安裝...")
-    try:
-        import sys
-        # Shortened package list line for clarity
-        packages = [
-            "protobuf", "google-api-python-client", "google-auth", 
-            "google-generativeai>=0.4.0"  # 更新為支持 gemini-2.5-pro-exp-03-25 的版本
-        ]
-        for package in packages:
-            # Shortened check_call line
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", 
-                 "--no-cache-dir", package]
-            )
-        import google.generativeai as genai
-        print("成功安裝並導入 google.generativeai!")
-    except Exception as e:
-        print(f"無法安裝 google.generativeai: {e}")
-        # 繼續執行，但標記不使用 Gemini 功能
+# TEMPORARILY DISABLED due to hanging import issue
+genai = None
+print("警告: Google Generative AI 功能已暫時停用，將使用 OpenAI 作為替代")
+
+# try:
+#     import google.generativeai as genai
+# except ImportError:
+#     print("找不到 google.generativeai 模組，嘗試自動安裝...")
+#     try:
+#         import sys
+#         # Shortened package list line for clarity
+#         packages = [
+#             "protobuf", "google-api-python-client", "google-auth",
+#             "google-generativeai>=0.4.0"  # 更新為支持 gemini-2.5-pro-exp-03-25 的版本
+#         ]
+#         for package in packages:
+#             # Shortened check_call line
+#             subprocess.check_call(
+#                 [sys.executable, "-m", "pip", "install",
+#                  "--no-cache-dir", package]
+#             )
+#         import google.generativeai as genai
+#         print("成功安裝並導入 google.generativeai!")
+#     except Exception as e:
+#         print(f"無法安裝 google.generativeai: {e}")
+#         # 繼續執行，但標記不使用 Gemini 功能
 
 import logging
 # import uuid  # Removed unused import
@@ -64,7 +68,8 @@ class YouTubeSummarizer:
                  cookie_file_path: Optional[str] = None,
                  model_preference: str = 'auto',
                  gemini_model: str = 'gemini-2.5-flash-preview-05-20',
-                 openai_model: str = 'gpt-4o'):
+                 openai_model: str = 'gpt-4o',
+                 whisper_model: str = 'gpt-4o-transcribe'):
         """
         初始化 YouTube 摘要器
         
@@ -77,6 +82,7 @@ class YouTubeSummarizer:
             model_preference (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
             gemini_model (str): 使用的 Gemini 模型名稱
             openai_model (str): 使用的 OpenAI 模型名稱
+            whisper_model (str): 使用的 Whisper 模型名稱
         """
         self.api_keys = api_keys or {}
         if 'openai' not in self.api_keys:
@@ -89,6 +95,7 @@ class YouTubeSummarizer:
         self.model_preference = model_preference
         self.gemini_model = gemini_model
         self.openai_model = openai_model
+        self.whisper_model = whisper_model
         self.cookie_file_path = cookie_file_path
         if self.cookie_file_path and not os.path.exists(self.cookie_file_path):
             logging.warning(f"提供的 Cookie 檔案路徑不存在: {self.cookie_file_path}")
@@ -505,7 +512,7 @@ class YouTubeSummarizer:
                                                   f"發送第 {idx+1}/{len(segments)} 段音訊至 Whisper API...")
                             
                             transcript_response = self.openai_client.audio.transcriptions.create(
-                                model=self.WHISPER_MODEL,
+                                model=self.whisper_model,
                                 file=audio_file
                             )
                             combined_transcript += transcript_response.text + "\n\n"
@@ -941,7 +948,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
                         google_api_key: Optional[str] = None,
                         model_type: str = 'auto',
                         gemini_model: str = 'gemini-2.5-flash-preview-05-20',
-                        openai_model: str = 'gpt-4o') -> Dict[str, Any]:
+                        openai_model: str = 'gpt-4o',
+                        whisper_model: str = 'gpt-4o-transcribe') -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
     
@@ -955,6 +963,7 @@ def run_summary_process(url: str, keep_audio: bool = False,
         model_type (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
         gemini_model (str): 使用的 Gemini 模型名稱
         openai_model (str): 使用的 OpenAI 模型名稱
+        whisper_model (str): 使用的 Whisper 模型名稱
     返回:
         Dict: 包含處理結果的字典
     """
@@ -986,7 +995,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
             cookie_file_path=cookie_file_path,
             model_preference=model_type,
             gemini_model=gemini_model,
-            openai_model=openai_model
+            openai_model=openai_model,
+            whisper_model=whisper_model
         )
         
         # 下載影片並提取音訊

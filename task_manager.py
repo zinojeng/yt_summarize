@@ -27,6 +27,7 @@ class Task:
     model_type: str = "auto"
     gemini_model: str = "gemini-2.5-flash-preview-05-20"
     openai_model: str = "gpt-4o"
+    whisper_model: str = "gpt-4o-transcribe"  # 新增: Whisper 模型選擇
     progress: Dict[str, Any] = field(default_factory=dict)
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -45,6 +46,7 @@ class Task:
             "model_type": self.model_type,
             "gemini_model": self.gemini_model,
             "openai_model": self.openai_model,
+            "whisper_model": self.whisper_model,
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
@@ -114,7 +116,7 @@ class TaskManager:
     def create_task(self, task_id: str, url: str, keep_audio: bool = False, 
                    openai_api_key: str = "", google_api_key: str = "", 
                    model_type: str = "auto", gemini_model: str = "gemini-2.5-flash-preview-05-20",
-                   openai_model: str = "gpt-4o") -> Task:
+                   openai_model: str = "gpt-4o", whisper_model: str = "gpt-4o-transcribe") -> Task:
         """創建新任務"""
         with self.lock:
             task = Task(
@@ -127,7 +129,8 @@ class TaskManager:
                 google_api_key=google_api_key,
                 model_type=model_type,
                 gemini_model=gemini_model,
-                openai_model=openai_model
+                openai_model=openai_model,
+                whisper_model=whisper_model
             )
             self.tasks[task_id] = task
             logger.info(f"創建新任務: {task_id}")
@@ -243,6 +246,7 @@ class TaskManager:
                         openai_api_key=task_data.get('openai_api_key', ''),
                         google_api_key=task_data.get('google_api_key', ''),
                         model_type=task_data.get('model_type', 'auto'),
+                        whisper_model=task_data.get('whisper_model', 'gpt-4o-transcribe'),
                         progress=task_data.get('progress', {}),
                         result=task_data.get('result'),
                         error=task_data.get('error'),

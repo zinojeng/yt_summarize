@@ -119,6 +119,7 @@ class SummaryRequest(BaseModel):
     keep_audio: bool = False
     openai_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
+    whisper_model: Optional[str] = "gpt-4o-transcribe"
 
 # API 端點: 提交摘要請求
 @app.post("/api/summarize")
@@ -132,6 +133,7 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
         model_type = data.get("model_type", "auto")
         gemini_model = data.get("gemini_model", "gemini-2.5-flash-preview-05-20")
         openai_model = data.get("openai_model", "gpt-4o")
+        whisper_model = data.get("whisper_model", "gpt-4o-transcribe")
         
         # 驗證 URL
         url_validation = SecurityValidator.validate_youtube_url(url)
@@ -165,7 +167,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             google_api_key=google_validation["sanitized_key"],
             model_type=model_type,
             gemini_model=gemini_model,
-            openai_model=openai_model
+            openai_model=openai_model,
+            whisper_model=whisper_model
         )
         
         # 啟動背景處理任務
@@ -178,7 +181,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             google_api_key=google_validation["sanitized_key"],
             model_type=model_type,
             gemini_model=gemini_model,
-            openai_model=openai_model
+            openai_model=openai_model,
+            whisper_model=whisper_model
         )
         
         return {"task_id": task_id}
@@ -196,7 +200,8 @@ async def process_video(
     google_api_key: str = None,
     model_type: str = "auto",
     gemini_model: str = "gemini-2.5-flash-preview-05-20",
-    openai_model: str = "gpt-4o"
+    openai_model: str = "gpt-4o",
+    whisper_model: str = "gpt-4o-transcribe"
 ):
     try:
         # 更新任務狀態
@@ -252,7 +257,8 @@ async def process_video(
                 google_api_key=google_api_key,
                 model_type=model_type,
                 gemini_model=gemini_model,
-                openai_model=openai_model
+                openai_model=openai_model,
+                whisper_model=whisper_model
             )
         
         try:
@@ -1073,7 +1079,15 @@ async def home(request: Request):
                 <div class="api-settings">
                     <h3>API 金鑰設定</h3>
                     <input type="password" id="openaiKey" name="openai_api_key" placeholder="OpenAI API 金鑰 (必填)">
-                    <p class="api-note">需要 OpenAI API 金鑰才能執行音訊轉錄（使用 GPT-4o-transcribe 模型）。即使選擇 Gemini 摘要，仍需要此金鑰。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
+                    <p class="api-note">需要 OpenAI API 金鑰才能執行音訊轉錄。即使選擇 Gemini 摘要，仍需要此金鑰。您可以在 <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI 網站</a> 申請免費金鑰。</p>
+                    
+                    <div class="form-group">
+                        <label for="whisperModel">轉錄模型:</label>
+                        <select id="whisperModel" name="whisper_model">
+                            <option value="gpt-4o-transcribe">GPT-4o Transcribe (高品質)</option>
+                            <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe (快速/經濟)</option>
+                        </select>
+                    </div>
                     
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
                     <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
@@ -1313,6 +1327,7 @@ async def home(request: Request):
                     
                     // 獲取 OpenAI 模型選擇
                     const openaiModel = $("#openaiModel").val() || "gpt-4o";
+                    const whisperModel = $("#whisperModel").val() || "gpt-4o-transcribe";
                     
                     // 創建請求數據
                     const requestData = {
@@ -1322,7 +1337,8 @@ async def home(request: Request):
                         google_api_key: googleApiKey,
                         model_type: modelType,
                         gemini_model: geminiModel,
-                        openai_model: openaiModel
+                        openai_model: openaiModel,
+                        whisper_model: whisperModel
                     };
                     
                     // 發送AJAX請求
