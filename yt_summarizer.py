@@ -53,7 +53,7 @@ load_dotenv()
 class YouTubeSummarizer:
     # 定義模型名稱常數
     WHISPER_MODEL = "gpt-4o-transcribe"
-    GEMINI_MODEL = 'gemini-2.5-flash-preview-05-20'
+    GEMINI_MODEL = 'gemini-3-flash-preview'
     OPENAI_FALLBACK_MODEL = "gpt-4o"  # Updated fallback model
     DEFAULT_OPENAI_MODEL = "gpt-4o"   # Updated default model
     
@@ -67,7 +67,7 @@ class YouTubeSummarizer:
                  progress_callback: Optional[Callable] = None,
                  cookie_file_path: Optional[str] = None,
                  model_preference: str = 'auto',
-                 gemini_model: str = 'gemini-2.5-flash-preview-05-20',
+                 gemini_model: str = 'gemini-3-flash-preview',
                  openai_model: str = 'gpt-4o',
                  whisper_model: str = 'gpt-4o-transcribe'):
         """
@@ -161,6 +161,10 @@ class YouTubeSummarizer:
             'quiet': True,
             'progress_hooks': [self.download_progress_hook],
             # 'ffmpeg_location': self.ffmpeg_path if self.ffmpeg_path != 'ffmpeg' else None
+            
+            # 增加 JS 執行環境設置以解決簽名問題
+            'js_runtimes': {'node': {}},
+            'remote_components': {'ejs:github': {}},
         }
         self.pbar = None
 
@@ -357,7 +361,12 @@ class YouTubeSummarizer:
         
         try:
             # 準備 yt-dlp 選項，包含 cookies
-            info_opts = {"quiet": True}
+            info_opts = {
+                "quiet": True,
+                # 確保元數據提取也能使用 JS 執行環境
+                'js_runtimes': {'node': {}},
+                'remote_components': {'ejs:github': {}},
+            }
             if self.cookie_file_path:
                 info_opts['cookiefile'] = self.cookie_file_path
                 self.ydl_opts['cookiefile'] = self.cookie_file_path
@@ -947,7 +956,7 @@ def run_summary_process(url: str, keep_audio: bool = False,
                         openai_api_key: Optional[str] = None,
                         google_api_key: Optional[str] = None,
                         model_type: str = 'auto',
-                        gemini_model: str = 'gemini-2.5-flash-preview-05-20',
+                        gemini_model: str = 'gemini-3-flash-preview',
                         openai_model: str = 'gpt-4o',
                         whisper_model: str = 'gpt-4o-transcribe') -> Dict[str, Any]:
     """

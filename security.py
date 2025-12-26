@@ -102,18 +102,19 @@ class SecurityValidator:
         if content_length > AppConfig.MAX_FILE_SIZE:
             return {"valid": False, "error": f"檔案大小超過限制 ({AppConfig.MAX_FILE_SIZE} bytes)"}
         
-        # 檢查副檔名
-        _, ext = os.path.splitext(filename.lower())
-        if ext not in AppConfig.ALLOWED_EXTENSIONS:
-            return {"valid": False, "error": f"不支援的檔案格式，只支援: {', '.join(AppConfig.ALLOWED_EXTENSIONS)}"}
+        # 檢查副檔名 (暫時移除嚴格检查，因為 cookies 文件可能沒有標準的副檔名)
+        # _, ext = os.path.splitext(filename.lower())
+        # if ext not in AppConfig.ALLOWED_EXTENSIONS:
+        #     return {"valid": False, "error": f"不支援的檔案格式，只支援: {', '.join(AppConfig.ALLOWED_EXTENSIONS)}"}
         
-        # 檢查檔案名稱是否包含危險字符
-        if not re.match(r'^[a-zA-Z0-9\-_. ]+$', filename):
-            return {"valid": False, "error": "檔案名稱包含無效字符"}
+        # 檢查檔案名稱是否包含無效字符 (放寬限制，允許中文等 Unicode 字符)
+        # 只檢查是否包含路徑遍歷字符
+        if '..' in filename or '/' in filename or '\\' in filename:
+             return {"valid": False, "error": "無效的檔案名稱"}
         
-        # 生成安全的檔案名稱
-        safe_filename = re.sub(r'[^\w\-_. ]', '', filename)
-        safe_filename = re.sub(r'\s+', '_', safe_filename)
+        # 生成安全的檔案名稱 - 保留原始名稱，只處理非常危險的字符
+        safe_filename = os.path.basename(filename)
+        safe_filename = re.sub(r'[\\/*?:"<>|]', '_', safe_filename) # 替換 Windows/Linux 檔案系統非法字符
         
         return {"valid": True, "safe_filename": safe_filename}
     

@@ -131,7 +131,7 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
-        gemini_model = data.get("gemini_model", "gemini-2.5-flash-preview-05-20")
+        gemini_model = data.get("gemini_model", "gemini-3-flash-preview")
         openai_model = data.get("openai_model", "gpt-4o")
         whisper_model = data.get("whisper_model", "gpt-4o-transcribe")
         
@@ -199,7 +199,7 @@ async def process_video(
     openai_api_key: str, 
     google_api_key: str = None,
     model_type: str = "auto",
-    gemini_model: str = "gemini-2.5-flash-preview-05-20",
+    gemini_model: str = "gemini-3-flash-preview",
     openai_model: str = "gpt-4o",
     whisper_model: str = "gpt-4o-transcribe"
 ):
@@ -225,21 +225,24 @@ async def process_video(
         # 檢查 cookies 目錄中的任何 .txt 文件
         if os.path.exists(AppConfig.COOKIES_DIR):
             # 尋找所有 .txt 文件
-            txt_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
-                        if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+            # 尋找所有文件 (不限制副檔名)
+            all_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                        if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
             
-            if txt_files:
+            if all_files:
+
+                
                 # 優先使用特定名稱的文件
                 priority_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
                 for name in priority_names:
-                    if name in txt_files:
+                    if name in all_files:
                         cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, name)
                         logger.info(f"找到優先 cookies 文件: {cookie_file_path}")
                         break
                 
-                # 如果沒有優先文件，使用第一個找到的 .txt 文件
-                if not cookie_file_path and txt_files:
-                    cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, txt_files[0])
+                # 如果沒有優先文件，使用第一個找到的文件
+                if not cookie_file_path and all_files:
+                    cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, all_files[0])
                     logger.info(f"找到 cookies 文件: {cookie_file_path}")
         
         if not cookie_file_path:
@@ -426,7 +429,7 @@ async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
-        gemini_model = data.get("gemini_model", "gemini-2.5-flash-preview-05-20")
+        gemini_model = data.get("gemini_model", "gemini-3-flash-preview")
         
         if not urls or not isinstance(urls, list):
             return {"status": "error", "message": "請提供有效的 URL 列表"}
@@ -1104,8 +1107,8 @@ async def home(request: Request):
                     <div class="form-group" id="geminiModelGroup" style="display: none;">
                         <label for="geminiModel">Gemini 模型選擇:</label>
                         <select id="geminiModel" name="gemini_model">
-                            <option value="gemini-2.5-flash-preview-05-20">Gemini 2.5 Flash Preview (快速)</option>
-                            <option value="gemini-2.5-pro-preview-06-05">Gemini 2.5 Pro Preview (高品質)</option>
+                            <option value="gemini-3-flash-preview">Gemini 3 Flash Preview (快速)</option>
+                            <option value="gemini-3-pro-preview">Gemini 3 Pro Preview (高品質)</option>
                         </select>
                     </div>
                     
@@ -1752,14 +1755,16 @@ async def upload_cookies(cookies_file: UploadFile = File(...)):
         if not content_validation["valid"]:
             return {"status": "error", "message": content_validation["error"]}
         
-        # 保存 cookies 文件（使用原始文件名）
-        safe_filename = os.path.basename(cookies_file.filename)
-        if not safe_filename.endswith('.txt'):
-            safe_filename = 'cookies.txt'
+        # 保存 cookies 文件（使用安全處理後的文件名）
+        safe_filename = file_validation["safe_filename"]
+        
+        # 如果為了保險起見，可以強制加上 .txt，但使用者要求不限，所以直接使用
+        # if not safe_filename.endswith('.txt'):
+        #     safe_filename += '.txt'
         
         # 清理現有的 cookies 文件
         existing_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
-                         if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+                         if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
         for old_file in existing_files:
             try:
                 os.remove(os.path.join(AppConfig.COOKIES_DIR, old_file))
@@ -1794,12 +1799,12 @@ async def get_cookies_status():
     """檢查當前 cookies 文件狀態"""
     # 檢查 cookies 目錄中的任何 .txt 文件
     if os.path.exists(AppConfig.COOKIES_DIR):
-        txt_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
-                    if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+        all_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                    if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
         
-        if txt_files:
-            # 使用第一個找到的 .txt 文件
-            name = txt_files[0]
+        if all_files:
+            # 使用第一個找到的文件
+            name = all_files[0]
             cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
             try:
                 # 獲取文件修改時間
@@ -1830,12 +1835,12 @@ async def delete_cookies():
     deleted_files = []
     
     try:
-        # 刪除所有 .txt 文件
+        # 刪除所有文件
         if os.path.exists(AppConfig.COOKIES_DIR):
-            txt_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
-                        if f.endswith('.txt') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+            all_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
+                        if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
             
-            for name in txt_files:
+            for name in all_files:
                 cookies_path = os.path.join(AppConfig.COOKIES_DIR, name)
                 os.remove(cookies_path)
                 deleted_files.append(name)
