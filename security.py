@@ -151,11 +151,64 @@ class CookiesValidator:
     REQUIRED_COOKIES = ['VISITOR_INFO1_LIVE', 'YSC']
     
     @classmethod
+    @classmethod
     def validate_cookies_content(cls, content: str) -> Dict[str, Any]:
-        """驗證 cookies 文件內容"""
+        """驗證 cookies 文件內容 (支援 Netscape 和 JSON 格式)"""
         if not content:
             return {"valid": False, "error": "Cookies 文件內容為空"}
         
+        # 嘗試解析為 JSON 格式 (例如 EditThisCookie 導出的格式)
+        if content.strip().startswith('[') or content.strip().startswith('{'):
+            try:
+                import json
+                cookies_data = json.loads(content)
+                if isinstance(cookies_data, dict):
+                    # 某些格式可能包裹在一個對象中
+                    if 'cookies' in cookies_data:
+                        cookies_data = cookies_data['cookies']
+                    else:
+                        # 單個 cookie 對象?
+                        cookies_data = [cookies_data]
+                
+                if not isinstance(cookies_data, list):
+                    pass # 不是列表，繼續嘗試文本解析
+                else:
+                    valid_entries = 0
+                    has_youtube_domain = False
+                    has_required_cookies = False
+                    
+                    for cookie in cookies_data:
+                        if not isinstance(cookie, dict):
+                            continue
+                            
+                        domain = cookie.get('domain', '')
+                        name = cookie.get('name', '')
+                        
+                        # 檢查 YouTube 域名
+                        if any(yt_domain in domain for yt_domain in cls.REQUIRED_YOUTUBE_DOMAINS):
+                            has_youtube_domain = True
+                        
+                        # 檢查必要的 cookies
+                        if name in cls.REQUIRED_COOKIES:
+                            has_required_cookies = True
+                            
+                        valid_entries += 1
+                    
+                    if valid_entries > 0:
+                        if not has_youtube_domain:
+                            return {"valid": False, "error": "Cookies (JSON) 不包含 YouTube 域名"}
+                        
+                        return {
+                            "valid": True,
+                            "entries_count": valid_entries,
+                            "has_youtube_domain": has_youtube_domain,
+                            "has_required_cookies": has_required_cookies,
+                            "format": "json"
+                        }
+            except Exception:
+                # JSON 解析失敗，回退到文本解析
+                pass
+
         try:
             lines = content.strip().split('\n')
             valid_entries = 0
@@ -164,19 +217,28 @@ class CookiesValidator:
             
             for line in lines:
                 line = line.strip()
-                if not line or line.startswith('#'):
+                # 修正: 支援 #HttpOnly_ 前綴的 cookies，不要跳過它們
+                if not line or (line.startswith('#') and not line.startswith('#HttpOnly_')):
                     continue
                 
                 # 解析 cookies 格式
                 parts = line.split('\t')
+                
+                # 有些編輯器可能會把 tab 轉成 spaces，做一些寬容處理?
+                # 但標準 Netscape 必須是 tab。yt-dlp 對格式要求較嚴格。
+                # 如果 split('\t') 失敗，且看起來像是用空格分隔的，可以嘗試處理 (風險較大，暫不處理)
+                
                 if len(parts) < 6:
                     continue
                 
                 domain = parts[0]
+                # 對於 HttpOnly cookies，域名可能帶有 #HttpOnly_ 前綴，檢查時應考慮
+                clean_domain = domain.replace('#HttpOnly_', '')
+                
                 name = parts[5] if len(parts) > 5 else ""
                 
                 # 檢查 YouTube 域名
-                if any(yt_domain in domain for yt_domain in cls.REQUIRED_YOUTUBE_DOMAINS):
+                if any(yt_domain in clean_domain for yt_domain in cls.REQUIRED_YOUTUBE_DOMAINS):
                     has_youtube_domain = True
                 
                 # 檢查必要的 cookies
@@ -186,7 +248,7 @@ class CookiesValidator:
                 valid_entries += 1
             
             if valid_entries == 0:
-                return {"valid": False, "error": "找不到有效的 cookies 條目"}
+                return {"valid": False, "error": "找不到有效的 cookies 條目 (請確保使用 Netscape 格式或 JSON 格式)"}
             
             if not has_youtube_domain:
                 return {"valid": False, "error": "Cookies 文件不包含 YouTube 域名"}
@@ -195,7 +257,8 @@ class CookiesValidator:
                 "valid": True,
                 "entries_count": valid_entries,
                 "has_youtube_domain": has_youtube_domain,
-                "has_required_cookies": has_required_cookies
+                "has_required_cookies": has_required_cookies,
+                "format": "netscape"
             }
             
         except Exception as e:

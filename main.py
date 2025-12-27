@@ -222,28 +222,23 @@ async def process_video(
         # 檢查是否有 cookies 文件
         cookie_file_path = None
         
-        # 檢查 cookies 目錄中的任何 .txt 文件
+        # 檢查 cookies 目錄中的 .txt 文件
         if os.path.exists(AppConfig.COOKIES_DIR):
-            # 尋找所有 .txt 文件
-            # 尋找所有文件 (不限制副檔名)
-            all_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
-                        if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
+            # 優先使用特定名稱的文件
+            # 解決問題：避免使用到舊的、名稱不規範的 cookie 檔案 (如 www.youtube.com_cookies (6).txt)
+            priority_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
             
-            if all_files:
-
-                
-                # 優先使用特定名稱的文件
-                priority_names = ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]
-                for name in priority_names:
-                    if name in all_files:
-                        cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, name)
-                        logger.info(f"找到優先 cookies 文件: {cookie_file_path}")
-                        break
-                
-                # 如果沒有優先文件，使用第一個找到的文件
-                if not cookie_file_path and all_files:
-                    cookie_file_path = os.path.join(AppConfig.COOKIES_DIR, all_files[0])
-                    logger.info(f"找到 cookies 文件: {cookie_file_path}")
+            # 直接檢查這些檔案是否存在
+            for name in priority_names:
+                potential_path = os.path.join(AppConfig.COOKIES_DIR, name)
+                if os.path.isfile(potential_path):
+                    cookie_file_path = potential_path
+                    logger.info(f"找到優先 cookies 文件: {cookie_file_path}")
+                    break
+            
+            # 移除自動使用任意檔案的邏輯，確保只使用標準名稱的 cookies
+            if not cookie_file_path:
+                logger.debug("未找到標準名稱的 cookies 文件 (cookies.txt 等)")
         
         if not cookie_file_path:
             logger.info("未找到 cookies 文件，將不使用 cookies")
@@ -1068,6 +1063,23 @@ async def home(request: Request):
                 color: #666;
                 font-style: italic;
             }
+            
+            .error-alert {
+                padding: 15px;
+                background-color: #f8d7da;
+                color: #721c24;
+                border: 1px solid #f5c6cb;
+                border-radius: 4px;
+                margin-top: 20px;
+                margin-bottom: 20px;
+                display: none;
+                word-wrap: break-word;
+            }
+            .error-alert strong {
+                font-weight: bold;
+                display: block;
+                margin-bottom: 5px;
+            }
         </style>
     </head>
     <body>
@@ -1182,6 +1194,8 @@ async def home(request: Request):
                 </div>
             </div>
             
+            <div id="error-message" class="error-alert"></div>
+            
             <div id="results" style="display: none;">
                 <h2>處理結果</h2>
                 <p id="taskInfo"></p>
@@ -1285,10 +1299,19 @@ async def home(request: Request):
                     }
                 });
                 
+                function showError(message) {
+                    $("#error-message").html(`<strong>錯誤發生：</strong>${message}`).show();
+                    // 滾動到錯誤訊息
+                    $('html, body').animate({
+                        scrollTop: $("#error-message").offset().top - 100
+                    }, 500);
+                }
+
                 // 顯示處理中的UI函數
                 function showProcessingUI() {
                     $("#loading").show();
                     $("#results").hide();
+                    $("#error-message").hide(); // 隱藏之前的錯誤
                     
                     // 重置進度條
                     $("#progressStage").text("初始化中...");
@@ -1314,14 +1337,13 @@ async def home(request: Request):
                     const modelType = $("#modelType").val();
                     const geminiModel = $("#geminiModel").val();
                     
-                    // 檢查必填項
                     if (!youtubeUrl) {
-                        alert("請輸入 YouTube 網址");
+                        showError("請輸入 YouTube 網址");
                         return;
                     }
                     
                     if (!openaiApiKey) {
-                        alert("請輸入 OpenAI API 金鑰");
+                        showError("請輸入 OpenAI API 金鑰");
                         return;
                     }
                     
@@ -1354,12 +1376,12 @@ async def home(request: Request):
                             if (data.task_id) {
                                 pollTaskStatus(data.task_id);
                             } else {
-                                alert("請求失敗: 無效的回應");
+                                showError("請求失敗: 無效的回應");
                                 $("#loading").hide();
                             }
                         },
                         error: function(xhr, status, error) {
-                            alert("錯誤: " + (xhr.responseJSON?.detail || error || "未知錯誤"));
+                            showError("錯誤: " + (xhr.responseJSON?.message || xhr.responseJSON?.detail || error || "未知錯誤"));
                             $("#loading").hide();
                         }
                     });
@@ -1449,7 +1471,7 @@ async def home(request: Request):
                                     }, 500); // 稍微延遲顯示結果，讓用戶看到100%完成狀態
                                     
                                 } else if (taskData.status === "error") {
-                                    alert("處理失敗: " + (taskData.error || "未知錯誤"));
+                                    showError("處理失敗: " + (taskData.error || "未知錯誤"));
                                     $("#loading").hide();
                                     clearInterval(pollInterval);
                                 }
@@ -1755,12 +1777,9 @@ async def upload_cookies(cookies_file: UploadFile = File(...)):
         if not content_validation["valid"]:
             return {"status": "error", "message": content_validation["error"]}
         
-        # 保存 cookies 文件（使用安全處理後的文件名）
-        safe_filename = file_validation["safe_filename"]
-        
-        # 如果為了保險起見，可以強制加上 .txt，但使用者要求不限，所以直接使用
-        # if not safe_filename.endswith('.txt'):
-        #     safe_filename += '.txt'
+        # 保存 cookies 文件（固定為 cookies.txt 以便系統識別）
+        # 即使使用者上傳任意檔名，我們統一存儲為 cookies.txt，確保被系統正確識別
+        target_filename = "cookies.txt"
         
         # 清理現有的 cookies 文件
         existing_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
@@ -1772,7 +1791,7 @@ async def upload_cookies(cookies_file: UploadFile = File(...)):
             except Exception as e:
                 logger.warning(f"刪除舊 cookies 文件失敗: {e}")
         
-        cookies_path = os.path.join(AppConfig.COOKIES_DIR, safe_filename)
+        cookies_path = os.path.join(AppConfig.COOKIES_DIR, target_filename)
         
         with open(cookies_path, "w", encoding="utf-8") as f:
             f.write(content_str)
