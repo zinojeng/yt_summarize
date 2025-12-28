@@ -1140,7 +1140,10 @@ async def home(request: Request):
                     <div class="form-group">
                         <label for="cookiesFile">YouTube Cookies 文件 (選填):</label>
                         <input type="file" id="cookiesFile" accept=".txt" style="margin-bottom: 10px;">
-                        <div id="cookiesStatus" class="api-note" style="margin-top: 5px;"></div>
+                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
+                            <div id="cookiesStatus" class="api-note" style="margin: 0;"></div>
+                            <button type="button" id="clearCookiesBtn" style="padding: 2px 8px; font-size: 12px; background-color: #6c757d; display: none;">清除 Cookies</button>
+                        </div>
                         <p class="api-note">上傳 cookies.txt 文件可以訪問會員內容。<a href="#" onclick="showCookiesHelp()">如何獲取？</a></p>
                     </div>
                 </div>
@@ -1296,6 +1299,29 @@ async def home(request: Request):
                     const file = this.files[0];
                     if (file) {
                         uploadCookiesFile(file);
+                    }
+                });
+                
+                // 清除 Cookies 按鈕處理
+                $("#clearCookiesBtn").click(function() {
+                    if (confirm("確定要清除已上傳的 Cookies 嗎？")) {
+                        $.ajax({
+                            url: "/api/cookies",
+                            type: "DELETE",
+                            success: function(data) {
+                                if (data.status === "success") {
+                                    $("#cookiesStatus").html(`<span style="color: #666;">尚未上傳 cookies 文件</span>`);
+                                    $("#clearCookiesBtn").hide();
+                                    $("#cookiesFile").val(''); // 重置文件輸入框
+                                    alert("Cookies 已清除");
+                                } else {
+                                    showError(data.message);
+                                }
+                            },
+                            error: function() {
+                                showError("清除 Cookies 失敗");
+                            }
+                        });
                     }
                 });
                 
@@ -1694,8 +1720,10 @@ async def home(request: Request):
                         success: function(data) {
                             if (data.status === "available") {
                                 $("#cookiesStatus").html(`<span style="color: green;">✓ Cookies 已上傳 (${data.upload_time})</span>`);
+                                $("#clearCookiesBtn").show();
                             } else {
                                 $("#cookiesStatus").html(`<span style="color: #666;">尚未上傳 cookies 文件</span>`);
+                                $("#clearCookiesBtn").hide();
                             }
                         },
                         error: function() {
@@ -1720,8 +1748,10 @@ async def home(request: Request):
                         success: function(data) {
                             if (data.status === "success") {
                                 $("#cookiesStatus").html(`<span style="color: green;">✓ ${data.message}</span>`);
+                                $("#clearCookiesBtn").show();
                             } else {
                                 $("#cookiesStatus").html(`<span style="color: red;">✗ ${data.message}</span>`);
+                                $("#clearCookiesBtn").hide();
                             }
                         },
                         error: function() {
