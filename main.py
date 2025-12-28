@@ -1080,6 +1080,132 @@ async def home(request: Request):
                 display: block;
                 margin-bottom: 5px;
             }
+            
+            /* Modal 樣式 */
+            .modal {
+                display: none;
+                position: fixed;
+                z-index: 1000;
+                left: 0;
+                top: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0,0,0,0.5);
+                overflow: auto;
+            }
+            
+            .modal-content {
+                background-color: #fefefe;
+                margin: 5% auto;
+                padding: 0;
+                border: 1px solid #888;
+                width: 80%;
+                max-width: 700px;
+                border-radius: 8px;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                position: relative;
+                animation: animatetop 0.4s;
+            }
+            
+            @keyframes animatetop {
+                from {top: -300px; opacity: 0}
+                to {top: 0; opacity: 1}
+            }
+            
+            .modal-header {
+                padding: 15px 20px;
+                background-color: #f8f9fa;
+                border-bottom: 1px solid #dee2e6;
+                border-radius: 8px 8px 0 0;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .modal-header h2 {
+                margin: 0;
+                font-size: 1.5rem;
+                border: none;
+                padding: 0;
+            }
+            
+            .close-btn {
+                color: #aaa;
+                font-size: 28px;
+                font-weight: bold;
+                cursor: pointer;
+                transition: color 0.2s;
+            }
+            
+            .close-btn:hover,
+            .close-btn:focus {
+                color: #000;
+                text-decoration: none;
+                cursor: pointer;
+            }
+            
+            .modal-body {
+                padding: 20px 30px;
+            }
+            
+            .step-list {
+                counter-reset: step;
+                list-style: none;
+                padding: 0;
+            }
+            
+            .step-list li {
+                position: relative;
+                padding-left: 50px;
+                margin-bottom: 20px;
+            }
+            
+            .step-list li::before {
+                counter-increment: step;
+                content: counter(step);
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 35px;
+                height: 35px;
+                background-color: #c4302b;
+                color: white;
+                text-align: center;
+                line-height: 35px;
+                border-radius: 50%;
+                font-weight: bold;
+            }
+            
+            .step-title {
+                font-weight: bold;
+                font-size: 1.1em;
+                margin-bottom: 5px;
+                display: block;
+            }
+            
+            .ref-link {
+                display: inline-block;
+                margin-top: 10px;
+                padding: 8px 15px;
+                background-color: #0366d6;
+                color: white;
+                text-decoration: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            
+            .ref-link:hover {
+                background-color: #0255b3;
+            }
+            
+            .warning-box {
+                background-color: #fff3cd;
+                border: 1px solid #ffeeba;
+                color: #856404;
+                padding: 15px;
+                border-radius: 4px;
+                margin-top: 20px;
+            }
         </style>
     </head>
     <body>
@@ -1412,6 +1538,29 @@ async def home(request: Request):
                         }
                     });
                 });
+
+                // 獲取 Cookie 幫助 Modal 元素
+                const modal = document.getElementById("cookieHelpModal");
+                const closeBtn = document.getElementsByClassName("close-btn")[0];
+                
+                // 關閉 Modal
+                if (closeBtn) {
+                    closeBtn.onclick = function() {
+                        modal.style.display = "none";
+                    }
+                }
+                
+                // 點擊 Modal 外部關閉
+                window.onclick = function(event) {
+                    if (event.target == modal) {
+                        modal.style.display = "none";
+                    }
+                }
+                
+                // 顯示 cookies 幫助信息
+                window.showCookiesHelp = function() {
+                    $("#cookieHelpModal").show();
+                }
                 
                 // 防止表單默認提交行為
                 $("#videoForm").on("submit", function(e) {
@@ -1760,28 +1909,55 @@ async def home(request: Request):
                     });
                 }
                 
-                // 顯示 cookies 幫助信息
-                function showCookiesHelp() {
-                    alert(`如何獲取 YouTube Cookies：
-
-1. 安裝瀏覽器擴展：
-   - Chrome: "Get cookies.txt LOCALLY"
-   - Firefox: "cookies.txt"
-
-2. 登入您的 YouTube 帳號
-
-3. 訪問您想下載的會員影片頁面
-
-4. 使用擴展導出 cookies.txt 文件
-
-5. 在此處上傳該文件
-
-注意：cookies 文件包含您的登入信息，請妥善保管！`);
-                }
             });
-        </script>
-    </body>
-    </html>
+    </script>
+
+    <!-- Cookies 幫助 Modal -->
+    <div id="cookieHelpModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>如何獲取 YouTube Cookies</h2>
+                <span class="close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p>為了讀取會員專屬影片或有年齡限制的內容，需要提供您的 YouTube Cookies。請按照以下步驟操作：</p>
+                
+                <ol class="step-list">
+                    <li>
+                        <span class="step-title">安裝瀏覽器擴展</span>
+                        我們推薦使用開源安全的 <strong>Get-cookies.txt-LOCALLY</strong> 擴展。
+                        <div style="margin-top: 10px;">
+                            <a href="https://github.com/kairi003/Get-cookies.txt-LOCALLY" target="_blank" class="ref-link">
+                                前往 GitHub 下載擴展
+                            </a>
+                        </div>
+                        <p style="font-size: 0.9em; color: #666; margin-top: 8px;">
+                            支援 Chrome、Edge、Firefox 等主流瀏覽器。如果不熟悉 GitHub，請查看該頁面下方的 "Installation" 說明。
+                        </p>
+                    </li>
+                    <li>
+                        <span class="step-title">登入 YouTube</span>
+                        在安裝了擴展的瀏覽器中，前往 <a href="https://www.youtube.com" target="_blank">YouTube</a> 並確認您已登入帳號。
+                    </li>
+                    <li>
+                        <span class="step-title">導出 Cookies</span>
+                        點擊瀏覽器工具列上的 Cookies 擴展圖示，然後點擊 "Export" 按鈕。這將下載一個 <code>cookies.txt</code> 文件到您的電腦。
+                    </li>
+                    <li>
+                        <span class="step-title">上傳文件</span>
+                        回到本頁面，在 "YouTube Cookies 文件" 區域點擊 "選擇檔案"，上傳剛才下載的 <code>cookies.txt</code>。
+                    </li>
+                </ol>
+                
+                <div class="warning-box">
+                    <strong>⚠️ 安全提示：</strong>
+                    Cookies 文件包含您的登入憑證。本服務僅在伺服器端暫時使用它來讀取影片內容，不會永久儲存或洩漏給第三方。請勿將 Cookies 文件分享給不信任的人。
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
     """
     return HTMLResponse(content=html_content)
 
