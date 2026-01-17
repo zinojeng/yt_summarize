@@ -9,33 +9,13 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 import yt_dlp
 
-# 自動安裝並導入 google 模組
-# TEMPORARILY DISABLED due to hanging import issue
-genai = None
-print("警告: Google Generative AI 功能已暫時停用，將使用 OpenAI 作為替代")
-
-# try:
-#     import google.generativeai as genai
-# except ImportError:
-#     print("找不到 google.generativeai 模組，嘗試自動安裝...")
-#     try:
-#         import sys
-#         # Shortened package list line for clarity
-#         packages = [
-#             "protobuf", "google-api-python-client", "google-auth",
-#             "google-generativeai>=0.4.0"  # 更新為支持 gemini-2.5-pro-exp-03-25 的版本
-#         ]
-#         for package in packages:
-#             # Shortened check_call line
-#             subprocess.check_call(
-#                 [sys.executable, "-m", "pip", "install",
-#                  "--no-cache-dir", package]
-#             )
-#         import google.generativeai as genai
-#         print("成功安裝並導入 google.generativeai!")
-#     except Exception as e:
-#         print(f"無法安裝 google.generativeai: {e}")
-#         # 繼續執行，但標記不使用 Gemini 功能
+# 導入 Google Generative AI 模組
+try:
+    import google.generativeai as genai
+    print("成功導入 google.generativeai")
+except ImportError as e:
+    print(f"警告: 無法導入 google.generativeai: {e}")
+    genai = None
 
 import logging
 # import uuid  # Removed unused import
@@ -161,8 +141,10 @@ class YouTubeSummarizer:
             'quiet': True,
             'progress_hooks': [self.download_progress_hook],
             # 'ffmpeg_location': self.ffmpeg_path if self.ffmpeg_path != 'ffmpeg' else None
-            
-            # 增加 JS 執行環境設置以解決簽名問題
+
+            # 增加 JS 執行環境設置以解決 YouTube 簽名挑戰問題
+            # 這是解決 "n challenge solving failed" 錯誤的必要設置
+            # 格式必須是 dict，不是 list
             'js_runtimes': {'node': {}},
             'remote_components': {'ejs:github': {}},
         }
@@ -485,10 +467,14 @@ class YouTubeSummarizer:
                 audio_duration = None
             
             # 音訊檔案處理
-            if audio_duration and audio_duration > 1800:  # 超過 30 分鐘
-                self.progress_callback("轉錄", 18, "音訊較長，將分段轉錄...")
+            # Whisper API 限制是 1400 秒，設定閾值為 1300 秒以確保安全
+            if audio_duration and audio_duration > 1300:  # 超過 ~21 分鐘
+                self.progress_callback("轉錄", 18, f"音訊較長 ({audio_duration:.0f}秒)，將分段轉錄...")
                 segments = self.split_audio_ffmpeg(audio_path)
-                # 這裡應該增加更精細的分段轉錄進度報告...
+                if not segments:
+                    # 如果分段失敗，嘗試使用原始檔案
+                    logging.warning("音訊分段失敗，嘗試使用原始檔案")
+                    segments = [audio_path]
             else:
                 segments = [audio_path]
                 self.progress_callback("轉錄", 18, "準備轉錄完整音訊...")
@@ -533,7 +519,8 @@ class YouTubeSummarizer:
                         except Exception as e:
                             error_msg = f"轉錄第 {idx+1} 段音訊時出錯: {str(e)}"
                             logging.error(error_msg)
-                            self.progress_callback("轉錄", int(segment_complete), error_msg)
+                            # 使用 segment_start_percent 而不是 segment_complete，避免變數未定義錯誤
+                            self.progress_callback("轉錄", int(segment_start_percent), error_msg)
                             if idx == 0:  # 如果第一段就失敗，整個轉錄就失敗
                                 raise
                 
@@ -785,8 +772,9 @@ class YouTubeSummarizer:
                         self.progress_callback("摘要", 25, "正在切換到 OpenAI 模型...")
                         model_used = None  # 重置，以便嘗試下一個模型
             
-            # 如果 Gemini 失敗或不可用，嘗試使用 OpenAI
-            if not model_used and (self.model_preference == 'auto' or self.model_preference == 'openai'):
+            # 如果 Gemini 失敗或不可用，嘗試使用 OpenAI 作為後備
+            # 不管使用者選擇什麼模型，如果主要模型失敗，都應該嘗試 OpenAI
+            if not model_used:
                 if self.api_keys.get('openai') and self.openai_client:
                     self.progress_callback("摘要", 28, "準備使用 OpenAI 模型...")
                     self.progress_callback("摘要", 30, "使用 OpenAI 模型...")
