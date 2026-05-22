@@ -780,6 +780,22 @@ async def home(request: Request):
                 font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                 font-size: 0.85em;
             }
+            .cookies-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+            .cookies-tab {
+                flex: 1; padding: 6px 10px; font-size: 0.85em;
+                background: #eee; color: #333; border: 1px solid #ddd;
+                border-bottom: none; border-radius: 4px 4px 0 0;
+                cursor: pointer;
+            }
+            .cookies-tab.active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+            .install-btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+            .install-btn {
+                padding: 8px 14px; border-radius: 6px; text-decoration: none;
+                font-size: 0.9em; border: 1px solid #ccc; background: #fafafa;
+                color: #333; display: inline-flex; align-items: center; gap: 6px;
+            }
+            .install-btn.primary { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+            .install-btn:hover { transform: translateY(-1px); }
             .feature-section {
                 display: flex;
                 flex-wrap: wrap;
@@ -1277,13 +1293,23 @@ async def home(request: Request):
                     </div>
                     
                     <div class="form-group">
-                        <label for="cookiesFile">YouTube Cookies 文件 (選填):</label>
-                        <input type="file" id="cookiesFile" accept=".txt" style="margin-bottom: 10px;">
+                        <label>YouTube Cookies (選填，會員內容需要):</label>
+                        <div class="cookies-tabs">
+                            <button type="button" class="cookies-tab active" data-tab="file">上傳 cookies.txt</button>
+                            <button type="button" class="cookies-tab" data-tab="paste">貼上內容</button>
+                        </div>
+                        <div class="cookies-pane" id="cookiesPane-file">
+                            <input type="file" id="cookiesFile" accept=".txt" style="margin-bottom: 6px;">
+                        </div>
+                        <div class="cookies-pane" id="cookiesPane-paste" style="display: none;">
+                            <textarea id="cookiesText" rows="6" placeholder="貼上從擴展複製的 cookies 內容 (Netscape 或 JSON 格式都可以)..." style="width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em;"></textarea>
+                            <button type="button" id="submitCookiesText" style="margin-top: 6px; padding: 4px 12px;">送出</button>
+                        </div>
                         <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
                             <div id="cookiesStatus" class="api-note" style="margin: 0;"></div>
                             <button type="button" id="clearCookiesBtn" style="padding: 2px 8px; font-size: 12px; background-color: #6c757d; display: none;">清除 Cookies</button>
                         </div>
-                        <p class="api-note">上傳 cookies.txt 文件可以訪問會員內容。<a href="#" onclick="showCookiesHelp()">如何獲取？</a></p>
+                        <p class="api-note">需要會員或登入專屬內容時才填。<a href="#" onclick="showCookiesHelp(); return false;">如何取得？(一鍵安裝擴展)</a></p>
                     </div>
                 </div>
                 
@@ -1467,12 +1493,80 @@ async def home(request: Request):
                 $("#modelType").change(updateModelVisibility);
                 $("#geminiModel, #openaiModel").change(refreshModelInfo);
                 
+                // Cookies 分頁切換
+                $(".cookies-tab").on("click", function() {
+                    const tab = $(this).data("tab");
+                    $(".cookies-tab").removeClass("active");
+                    $(this).addClass("active");
+                    $(".cookies-pane").hide();
+                    $(`#cookiesPane-${tab}`).show();
+                });
+
+                // 偵測使用者瀏覽器，標示對應的安裝按鈕為 primary
+                (function highlightInstallBtn() {
+                    const ua = navigator.userAgent;
+                    let primaryId = null;
+                    if (/Edg\//.test(ua)) primaryId = "installEdge";
+                    else if (/Firefox\//.test(ua)) primaryId = "installFirefox";
+                    else if (/Chrome\//.test(ua)) primaryId = "installChrome"; // includes Brave/Opera (Chromium)
+                    if (primaryId) $("#" + primaryId).addClass("primary");
+                })();
+
+                // 簡單的客戶端內容檢查：必須是 Netscape 文字格式或 JSON 陣列，且提到 youtube
+                function quickValidateCookies(text) {
+                    if (!text || text.length < 30) return "內容太短，請確認已完整貼上";
+                    const trimmed = text.trim();
+                    const looksNetscape = trimmed.startsWith("# Netscape") || /\\t(TRUE|FALSE)\\t/.test(trimmed);
+                    const looksJson = trimmed.startsWith("[") || trimmed.startsWith("{");
+                    if (!looksNetscape && !looksJson) return "格式不對：應為 Netscape (# Netscape HTTP Cookie File ...) 或 JSON";
+                    if (!/youtube/i.test(trimmed)) return "找不到 youtube 相關 cookies，請確認來自 youtube.com 並已登入";
+                    return null;
+                }
+
                 // Cookies 文件上傳處理
                 $("#cookiesFile").change(function() {
                     const file = this.files[0];
-                    if (file) {
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const err = quickValidateCookies(e.target.result);
+                        if (err) {
+                            $("#cookiesStatus").html(`<span style="color: #c00;">✗ ${err}</span>`);
+                            $("#cookiesFile").val('');
+                            return;
+                        }
                         uploadCookiesFile(file);
+                    };
+                    reader.readAsText(file);
+                });
+
+                // 貼上內容送出
+                $("#submitCookiesText").on("click", function() {
+                    const text = $("#cookiesText").val();
+                    const err = quickValidateCookies(text);
+                    if (err) {
+                        $("#cookiesStatus").html(`<span style="color: #c00;">✗ ${err}</span>`);
+                        return;
                     }
+                    $("#cookiesStatus").html(`<span style="color: #666;">上傳中...</span>`);
+                    $.ajax({
+                        url: "/api/upload-cookies-text",
+                        type: "POST",
+                        contentType: "application/json",
+                        data: JSON.stringify({ content: text }),
+                        success: function(data) {
+                            if (data.status === "success") {
+                                $("#cookiesStatus").html(`<span style="color: #28a745;">✓ ${data.message} (${data.entries_count} 筆)</span>`);
+                                $("#clearCookiesBtn").show();
+                                $("#cookiesText").val('');
+                            } else {
+                                $("#cookiesStatus").html(`<span style="color: #c00;">✗ ${data.message}</span>`);
+                            }
+                        },
+                        error: function() {
+                            $("#cookiesStatus").html(`<span style="color: #c00;">✗ 上傳失敗</span>`);
+                        }
+                    });
                 });
                 
                 // 清除 Cookies 按鈕處理
@@ -1982,28 +2076,45 @@ async def home(request: Request):
                 
                 <ol class="step-list">
                     <li>
-                        <span class="step-title">安裝瀏覽器擴展</span>
-                        我們推薦使用開源安全的 <strong>Get-cookies.txt-LOCALLY</strong> 擴展。
-                        <div style="margin-top: 10px;">
-                            <a href="https://github.com/kairi003/Get-cookies.txt-LOCALLY" target="_blank" class="ref-link">
-                                前往 GitHub 下載擴展
+                        <span class="step-title">一鍵安裝擴展 (Get cookies.txt LOCALLY)</span>
+                        開源、僅在本機運作，不會把 cookies 傳到任何伺服器。
+                        <div class="install-btn-row" id="installBtnRow">
+                            <a id="installChrome" class="install-btn"
+                               href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
+                               target="_blank" rel="noopener">
+                               Chrome Web Store
+                            </a>
+                            <a id="installEdge" class="install-btn"
+                               href="https://microsoftedge.microsoft.com/addons/detail/get-cookiestxt-locally/hahimkpehkdfkocclnjjbcfeglmjkbkn"
+                               target="_blank" rel="noopener">
+                               Edge Add-ons
+                            </a>
+                            <a id="installFirefox" class="install-btn"
+                               href="https://addons.mozilla.org/firefox/addon/get-cookies-txt-locally/"
+                               target="_blank" rel="noopener">
+                               Firefox Add-ons
+                            </a>
+                            <a class="install-btn"
+                               href="https://github.com/kairi003/Get-cookies.txt-LOCALLY"
+                               target="_blank" rel="noopener">
+                               原始碼 (GitHub)
                             </a>
                         </div>
-                        <p style="font-size: 0.9em; color: #666; margin-top: 8px;">
-                            支援 Chrome、Edge、Firefox 等主流瀏覽器。如果不熟悉 GitHub，請查看該頁面下方的 "Installation" 說明。
+                        <p style="font-size: 0.85em; color: #666; margin-top: 6px;">
+                            ※ 瀏覽器擴展基於安全考量無法被網頁直接呼叫，需要您手動點擊擴展按鈕。
                         </p>
                     </li>
                     <li>
                         <span class="step-title">登入 YouTube</span>
-                        在安裝了擴展的瀏覽器中，前往 <a href="https://www.youtube.com" target="_blank">YouTube</a> 並確認您已登入帳號。
+                        <a href="https://www.youtube.com" target="_blank" rel="noopener" class="install-btn" style="margin-top: 6px;">開啟 YouTube</a>
+                        確認您已用 Google 帳號登入。
                     </li>
                     <li>
-                        <span class="step-title">導出 Cookies</span>
-                        點擊瀏覽器工具列上的 Cookies 擴展圖示，然後點擊 "Export" 按鈕。這將下載一個 <code>cookies.txt</code> 文件到您的電腦。
-                    </li>
-                    <li>
-                        <span class="step-title">上傳文件</span>
-                        回到本頁面，在 "YouTube Cookies 文件" 區域點擊 "選擇檔案"，上傳剛才下載的 <code>cookies.txt</code>。
+                        <span class="step-title">匯出 Cookies (兩種方式擇一)</span>
+                        <ul style="margin-top: 4px;">
+                            <li><strong>下載檔案</strong>：點瀏覽器工具列的擴展圖示 → <code>Export</code>，會下載 <code>cookies.txt</code>，回到本頁從「上傳 cookies.txt」分頁選擇此檔。</li>
+                            <li><strong>複製內容</strong>：點擴展圖示 → <code>Copy</code>（或 Netscape / JSON 格式皆可），回到本頁切到「貼上內容」分頁，貼到方塊裡按「送出」。</li>
+                        </ul>
                     </li>
                 </ol>
                 
@@ -2020,59 +2131,71 @@ async def home(request: Request):
     return HTMLResponse(content=html_content)
 
 # 新增：Cookies 上傳端點
+def _save_cookies_content(content_str: str) -> dict:
+    """共用：驗證並保存 cookies 內容到標準路徑，供檔案上傳和文字貼上兩條路徑共用。"""
+    content_str = (content_str or "").strip()
+    content_validation = CookiesValidator.validate_cookies_content(content_str)
+    if not content_validation["valid"]:
+        return {"status": "error", "message": content_validation["error"]}
+
+    # 清理現有的 cookies 文件，然後固定存成 cookies.txt
+    existing_files = [
+        f for f in os.listdir(AppConfig.COOKIES_DIR)
+        if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))
+    ]
+    for old_file in existing_files:
+        try:
+            os.remove(os.path.join(AppConfig.COOKIES_DIR, old_file))
+            logger.info(f"刪除舊的 cookies 文件: {old_file}")
+        except Exception as e:
+            logger.warning(f"刪除舊 cookies 文件失敗: {e}")
+
+    cookies_path = os.path.join(AppConfig.COOKIES_DIR, "cookies.txt")
+    with open(cookies_path, "w", encoding="utf-8") as f:
+        f.write(content_str)
+    CookiesValidator.sanitize_cookies_file(cookies_path)
+    logger.info(f"Cookies 已保存: {cookies_path}")
+
+    return {
+        "status": "success",
+        "message": "Cookies 文件上傳成功！現在可以嘗試下載會員內容。",
+        "entries_count": content_validation["entries_count"],
+    }
+
+
 @app.post("/api/upload-cookies")
 async def upload_cookies(cookies_file: UploadFile = File(...)):
     """上傳 cookies.txt 文件"""
     try:
-        # 驗證文件上傳
         file_validation = SecurityValidator.validate_file_upload(
-            cookies_file.filename, 
+            cookies_file.filename,
             cookies_file.size or 0
         )
         if not file_validation["valid"]:
             return {"status": "error", "message": file_validation["error"]}
-        
-        # 讀取文件內容
+
         content = await cookies_file.read()
-        content_str = content.decode('utf-8')
-        
-        # 驗證 cookies 文件內容
-        content_validation = CookiesValidator.validate_cookies_content(content_str)
-        if not content_validation["valid"]:
-            return {"status": "error", "message": content_validation["error"]}
-        
-        # 保存 cookies 文件（固定為 cookies.txt 以便系統識別）
-        # 即使使用者上傳任意檔名，我們統一存儲為 cookies.txt，確保被系統正確識別
-        target_filename = "cookies.txt"
-        
-        # 清理現有的 cookies 文件
-        existing_files = [f for f in os.listdir(AppConfig.COOKIES_DIR) 
-                         if not f.startswith('.') and os.path.isfile(os.path.join(AppConfig.COOKIES_DIR, f))]
-        for old_file in existing_files:
-            try:
-                os.remove(os.path.join(AppConfig.COOKIES_DIR, old_file))
-                logger.info(f"刪除舊的 cookies 文件: {old_file}")
-            except Exception as e:
-                logger.warning(f"刪除舊 cookies 文件失敗: {e}")
-        
-        cookies_path = os.path.join(AppConfig.COOKIES_DIR, target_filename)
-        
-        with open(cookies_path, "w", encoding="utf-8") as f:
-            f.write(content_str)
-        
-        # 清理 cookies 文件
-        CookiesValidator.sanitize_cookies_file(cookies_path)
-        
-        logger.info(f"Cookies 文件上傳成功: {cookies_path}")
-        
-        return {
-            "status": "success", 
-            "message": "Cookies 文件上傳成功！現在可以嘗試下載會員內容。",
-            "entries_count": content_validation["entries_count"]
-        }
-        
+        return _save_cookies_content(content.decode('utf-8'))
+
     except Exception as e:
         logger.error(f"上傳 cookies 時發生錯誤: {e}")
+        return {"status": "error", "message": f"上傳失敗: {str(e)}"}
+
+
+@app.post("/api/upload-cookies-text")
+async def upload_cookies_text(request: Request):
+    """直接接收 cookies 文字內容 (供「貼上」分頁使用)。"""
+    try:
+        data = await request.json()
+        content_str = data.get("content") or ""
+        if not content_str.strip():
+            return {"status": "error", "message": "未提供 cookies 內容"}
+        # 大小上限避免濫用：1 MB 對 cookies 來說已經非常寬鬆
+        if len(content_str.encode('utf-8')) > 1024 * 1024:
+            return {"status": "error", "message": "內容過大 (>1MB)，請確認貼上正確"}
+        return _save_cookies_content(content_str)
+    except Exception as e:
+        logger.error(f"貼上 cookies 時發生錯誤: {e}")
         return {"status": "error", "message": f"上傳失敗: {str(e)}"}
 
 
