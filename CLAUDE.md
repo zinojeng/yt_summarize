@@ -145,6 +145,13 @@ API keys can be provided via:
    pip3.11 install --upgrade --break-system-packages yt-dlp
    ```
 
+   **升級後務必清掉 cache** — 否則 yt-dlp 會繼續用舊版本快取的 challenge solver script (例如 0.3.2)，仍然會吐 `n challenge solving failed`：
+   ```bash
+   python3.11 -m yt_dlp --rm-cache-dir
+   # 或直接刪目錄
+   rm -rf ~/.cache/yt-dlp
+   ```
+
 2. **確保 Node.js 已安裝** (用於 JavaScript 挑戰解決):
    ```bash
    node --version  # 應該是 v20+ 以上
