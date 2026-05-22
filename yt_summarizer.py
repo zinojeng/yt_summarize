@@ -221,8 +221,14 @@ class YouTubeSummarizer:
                 self.pbar = None  # 重設 pbar
             logging.info("下載完成，開始音訊處理...")
 
-    def split_audio_ffmpeg(self, input_file, segment_duration=600):
-        """使用 FFmpeg 分割音訊檔案"""
+    def split_audio_ffmpeg(self, input_file, segment_duration=600, duration_hint=None):
+        """使用 FFmpeg 分割音訊檔案
+
+        參數:
+            input_file: 音訊檔案路徑
+            segment_duration: 每段時長 (秒)
+            duration_hint: 已知的音訊總時長 (秒)，提供時可跳過 ffprobe 呼叫
+        """
         try:
             logging.info("\n正在分割音訊檔案...")
 
@@ -235,20 +241,28 @@ class YouTubeSummarizer:
             ffprobe_path = self.ffprobe_path
             ffmpeg_path = self.ffmpeg_path
 
-            # 獲取音訊時長
-            probe_cmd = [
-                ffprobe_path, '-v', 'quiet', '-print_format', 'json',
-                '-show_format', input_file
-            ]
-            try:
-                probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
-                duration = float(json.loads(probe_output)['format']['duration'])
-            except subprocess.CalledProcessError as e:
-                 logging.error(f"執行 ffprobe 失敗 ({input_file}): {e}")
-                 return None
-            except (KeyError, json.JSONDecodeError, ValueError) as e:
-                 logging.error(f"解析 ffprobe 輸出失敗 ({input_file}): {e}")
-                 return None
+            # 獲取音訊時長：優先採用呼叫端提供的時長，
+            # 否則 ffprobe，若 ffprobe 仍失敗則用檔案大小做保守估計，
+            # 確保超長音訊仍會被分段而不會直接送進 Whisper 觸發 1400s 限制
+            duration = duration_hint
+            if duration is None:
+                probe_cmd = [
+                    ffprobe_path, '-v', 'quiet', '-print_format', 'json',
+                    '-show_format', input_file
+                ]
+                try:
+                    probe_output = subprocess.check_output(probe_cmd).decode('utf-8')
+                    duration = float(json.loads(probe_output)['format']['duration'])
+                except (subprocess.CalledProcessError, KeyError,
+                        json.JSONDecodeError, ValueError) as e:
+                    # 估算：下載器固定使用 192 kbps mp3 → 24 KB/s
+                    file_size_bytes = os.path.getsize(input_file)
+                    estimated = file_size_bytes / (24 * 1024)
+                    logging.warning(
+                        f"ffprobe 取得時長失敗 ({e})，"
+                        f"以檔案大小估算 ≈ {estimated:.0f} 秒"
+                    )
+                    duration = estimated
 
             # 計算需要分割的段數
             num_segments = int(duration / segment_duration) + 1
@@ -467,10 +481,27 @@ class YouTubeSummarizer:
                 audio_duration = None
             
             # 音訊檔案處理
-            # Whisper API 限制是 1400 秒，設定閾值為 1300 秒以確保安全
-            if audio_duration and audio_duration > 1300:  # 超過 ~21 分鐘
-                self.progress_callback("轉錄", 18, f"音訊較長 ({audio_duration:.0f}秒)，將分段轉錄...")
-                segments = self.split_audio_ffmpeg(audio_path)
+            # Whisper / gpt-4o-transcribe API 限制是 1400 秒，閾值設 1300 秒以確保安全
+            # 若 ffprobe 失敗 (audio_duration is None)，使用檔案大小做保守估計：
+            # 192kbps mp3 → 約 1.44 MB/分鐘，>20 MB 大概率超過 1400s，須先分段
+            should_split = False
+            if audio_duration and audio_duration > 1300:
+                should_split = True
+                self.progress_callback(
+                    "轉錄", 18,
+                    f"音訊較長 ({audio_duration:.0f}秒)，將分段轉錄..."
+                )
+            elif audio_duration is None and file_size > 20:
+                should_split = True
+                self.progress_callback(
+                    "轉錄", 18,
+                    f"無法取得音訊時長且檔案較大 ({file_size:.1f} MB)，將保守地分段轉錄..."
+                )
+
+            if should_split:
+                segments = self.split_audio_ffmpeg(
+                    audio_path, duration_hint=audio_duration
+                )
                 if not segments:
                     # 如果分段失敗，嘗試使用原始檔案
                     logging.warning("音訊分段失敗，嘗試使用原始檔案")
@@ -517,12 +548,12 @@ class YouTubeSummarizer:
                                                  f"已完成第 {idx+1}/{len(segments)} 段音訊轉錄")
                             
                         except Exception as e:
-                            error_msg = f"轉錄第 {idx+1} 段音訊時出錯: {str(e)}"
+                            error_msg = f"轉錄第 {idx+1}/{len(segments)} 段音訊時出錯: {str(e)}"
                             logging.error(error_msg)
                             # 使用 segment_start_percent 而不是 segment_complete，避免變數未定義錯誤
                             self.progress_callback("轉錄", int(segment_start_percent), error_msg)
-                            if idx == 0:  # 如果第一段就失敗，整個轉錄就失敗
-                                raise
+                            # 任何分段失敗都視為失敗，避免靜默產生不完整轉錄文本
+                            raise
                 
                 # 完成轉錄
                 self.progress_callback("轉錄", 85, "轉錄完成，處理文本...")
@@ -728,7 +759,10 @@ class YouTubeSummarizer:
             # 按偏好順序嘗試使用可用模型
             if self.model_preference == 'auto' or self.model_preference == 'gemini':
                 # 嘗試使用 Gemini 模型
-                if self.api_keys.get('gemini') and 'genai' in globals():
+                # 注意：必須檢查 genai is not None，而非 'genai' in globals()，
+                # 因為 import 失敗時模組層級會將 genai 設為 None，
+                # 此時 'genai' 仍存在於 globals 但呼叫會拋出 NoneType 錯誤
+                if self.api_keys.get('gemini') and genai is not None:
                     self.progress_callback("摘要", 15, "嘗試使用 Google Gemini 模型...")
                     try:
                         logging.info(f"使用 Google Gemini 模型 ({self.gemini_model})...")
