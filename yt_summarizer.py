@@ -33,22 +33,22 @@ load_dotenv()
 class YouTubeSummarizer:
     # 定義模型名稱常數
     WHISPER_MODEL = "gpt-4o-transcribe"
-    GEMINI_MODEL = 'gemini-3-flash-preview'
-    OPENAI_FALLBACK_MODEL = "gpt-4o"  # Updated fallback model
-    DEFAULT_OPENAI_MODEL = "gpt-4o"   # Updated default model
-    
+    GEMINI_MODEL = 'gemini-3.5-flash'
+    OPENAI_FALLBACK_MODEL = "gpt-5.4-mini"
+    DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+
     # o-series 推理模型列表
     O_SERIES_MODELS = {"o1", "o1-preview", "o1-mini", "o3", "o3-mini", "o4-mini"}
 
-    def __init__(self, 
-                 api_keys: Dict[str, str] = None, 
-                 keep_audio: bool = False, 
-                 directories: Dict[str, str] = None, 
+    def __init__(self,
+                 api_keys: Dict[str, str] = None,
+                 keep_audio: bool = False,
+                 directories: Dict[str, str] = None,
                  progress_callback: Optional[Callable] = None,
                  cookie_file_path: Optional[str] = None,
                  model_preference: str = 'auto',
-                 gemini_model: str = 'gemini-3-flash-preview',
-                 openai_model: str = 'gpt-4o',
+                 gemini_model: str = 'gemini-3.5-flash',
+                 openai_model: str = 'gpt-5.4-mini',
                  whisper_model: str = 'gpt-4o-transcribe'):
         """
         初始化 YouTube 摘要器
@@ -754,7 +754,10 @@ class YouTubeSummarizer:
         
         # 選擇使用的模型
         model_used = None
-        
+        # Token 用量：{"input": int, "output": int, "total": int}，
+        # 由 OpenAI response.usage 或 Gemini response.usage_metadata 填入
+        usage = None
+
         try:
             # 按偏好順序嘗試使用可用模型
             if self.model_preference == 'auto' or self.model_preference == 'gemini':
@@ -797,7 +800,19 @@ class YouTubeSummarizer:
                         # 提取結果
                         summary = response.text
                         model_used = self.gemini_model
-                        
+
+                        # 擷取 Gemini token 用量（usage_metadata 在新版 SDK 提供）
+                        try:
+                            meta = getattr(response, 'usage_metadata', None)
+                            if meta is not None:
+                                usage = {
+                                    "input": getattr(meta, 'prompt_token_count', 0) or 0,
+                                    "output": getattr(meta, 'candidates_token_count', 0) or 0,
+                                    "total": getattr(meta, 'total_token_count', 0) or 0,
+                                }
+                        except Exception as usage_err:
+                            logging.debug(f"無法擷取 Gemini token 用量: {usage_err}")
+
                         self.progress_callback("摘要", 80, "Gemini 摘要生成成功!")
                         
                     except Exception as e:
@@ -874,15 +889,28 @@ class YouTubeSummarizer:
                     
                     # 提取結果
                     summary = response.choices[0].message.content
-                    
+
                     # 檢查摘要內容是否有效
                     if not summary or summary.strip() == "":
                         error_msg = f"{openai_model} 返回空的摘要內容"
                         logging.warning(error_msg)
                         self.progress_callback("摘要", 85, error_msg)
                         raise Exception(error_msg)
-                    
+
                     model_used = openai_model
+
+                    # 擷取 OpenAI token 用量
+                    try:
+                        api_usage = getattr(response, 'usage', None)
+                        if api_usage is not None:
+                            usage = {
+                                "input": getattr(api_usage, 'prompt_tokens', 0) or 0,
+                                "output": getattr(api_usage, 'completion_tokens', 0) or 0,
+                                "total": getattr(api_usage, 'total_tokens', 0) or 0,
+                            }
+                    except Exception as usage_err:
+                        logging.debug(f"無法擷取 OpenAI token 用量: {usage_err}")
+
                     logging.info(f"摘要生成成功，使用模型: {openai_model}，內容長度: {len(summary)} 字符")
                     
                     if is_o_series:
@@ -921,7 +949,8 @@ class YouTubeSummarizer:
             return {
                 "status": "success",
                 "summary": summary,
-                "model_used": model_used
+                "model_used": model_used,
+                "usage": usage,
             }
             
         except Exception as e:
@@ -978,8 +1007,8 @@ def run_summary_process(url: str, keep_audio: bool = False,
                         openai_api_key: Optional[str] = None,
                         google_api_key: Optional[str] = None,
                         model_type: str = 'auto',
-                        gemini_model: str = 'gemini-3-flash-preview',
-                        openai_model: str = 'gpt-4o',
+                        gemini_model: str = 'gemini-3.5-flash',
+                        openai_model: str = 'gpt-5.4-mini',
                         whisper_model: str = 'gpt-4o-transcribe') -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
@@ -1093,6 +1122,7 @@ def run_summary_process(url: str, keep_audio: bool = False,
             'summary': summary_result.get('summary'),
             'transcript': transcript,  # 添加轉錄文本到返回結果
             'model_used': summary_result.get('model_used'),
+            'usage': summary_result.get('usage'),
             'processing_time': processing_time,
             'status': 'success'
         }

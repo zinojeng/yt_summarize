@@ -131,8 +131,8 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
-        gemini_model = data.get("gemini_model", "gemini-3-flash-preview")
-        openai_model = data.get("openai_model", "gpt-4o")
+        gemini_model = data.get("gemini_model", "gemini-3.5-flash")
+        openai_model = data.get("openai_model", "gpt-5.4-mini")
         whisper_model = data.get("whisper_model", "gpt-4o-transcribe")
         
         # 驗證 URL
@@ -199,8 +199,8 @@ async def process_video(
     openai_api_key: str, 
     google_api_key: str = None,
     model_type: str = "auto",
-    gemini_model: str = "gemini-3-flash-preview",
-    openai_model: str = "gpt-4o",
+    gemini_model: str = "gemini-3.5-flash",
+    openai_model: str = "gpt-5.4-mini",
     whisper_model: str = "gpt-4o-transcribe"
 ):
     try:
@@ -424,7 +424,7 @@ async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
-        gemini_model = data.get("gemini_model", "gemini-3-flash-preview")
+        gemini_model = data.get("gemini_model", "gemini-3.5-flash")
         
         if not urls or not isinstance(urls, list):
             return {"status": "error", "message": "請提供有效的 URL 列表"}
@@ -771,6 +771,14 @@ async def home(request: Request):
                 font-size: 0.9em;
                 color: #666;
                 margin-top: 5px;
+            }
+            .model-info-note {
+                background: #f4f7fb;
+                border-left: 3px solid #4a90e2;
+                padding: 6px 10px;
+                margin-top: 6px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 0.85em;
             }
             .feature-section {
                 display: flex;
@@ -1245,22 +1253,27 @@ async def home(request: Request):
                     <div class="form-group" id="geminiModelGroup" style="display: none;">
                         <label for="geminiModel">Gemini 模型選擇:</label>
                         <select id="geminiModel" name="gemini_model">
-                            <option value="gemini-3-flash-preview">Gemini 3 Flash Preview (快速)</option>
-                            <option value="gemini-3-pro-preview">Gemini 3 Pro Preview (高品質)</option>
+                            <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash (推薦：品質接近 Pro，價格與速度持平 Flash)</option>
+                            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (最強推理，適合長文/複雜內容)</option>
+                            <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite (最便宜、最低延遲，適合高流量)</option>
                         </select>
+                        <p class="api-note model-info-note" id="geminiModelInfo"></p>
                     </div>
-                    
+
                     <div class="form-group" id="openaiModelGroup" style="display: none;">
                         <label for="openaiModel">OpenAI 模型選擇:</label>
                         <select id="openaiModel" name="openai_model">
-                            <option value="gpt-4o">GPT-4o (旗艦聊天模型)</option>
-                            <option value="o1">o1 (推理模型)</option>
-                            <option value="o1-preview">o1-preview (推理模型預覽)</option>
-                            <option value="o1-mini">o1-mini (推理模型 - 快速)</option>
-                            <option value="o3">o3 (推理模型)</option>
-                            <option value="o3-mini">o3-mini (推理模型 - 快速)</option>
-                            <option value="o4-mini">o4-mini (推理模型 - 快速)</option>
+                            <option value="gpt-5.4-mini" selected>GPT-5.4 mini (推薦：性價比最高)</option>
+                            <option value="gpt-5.4">GPT-5.4 (品質/價格平衡的旗艦)</option>
+                            <option value="gpt-5.5">GPT-5.5 (最強推理，適合最複雜內容)</option>
+                            <option value="gpt-4o">GPT-4o (舊款旗艦)</option>
+                            <option value="o1">o1 (舊推理模型)</option>
+                            <option value="o1-mini">o1-mini (舊推理模型 - 快速)</option>
+                            <option value="o3">o3 (舊推理模型)</option>
+                            <option value="o3-mini">o3-mini (舊推理模型 - 快速)</option>
+                            <option value="o4-mini">o4-mini (舊推理模型 - 快速)</option>
                         </select>
+                        <p class="api-note model-info-note" id="openaiModelInfo"></p>
                     </div>
                     
                     <div class="form-group">
@@ -1413,12 +1426,46 @@ async def home(request: Request):
                         $("#openaiModelGroup").hide();
                     }
                 }
-                
+
+                // 模型規格 / 定價 / 推薦表 (USD 為每百萬 tokens)
+                const MODEL_SPECS = {
+                    // OpenAI
+                    "gpt-5.5":      { ctx: "1M",   maxOut: "128K", inUsd: 5.00,  outUsd: 30.00, tip: "最強推理；適合長轉錄文字、需要深度分析的內容。較貴。" },
+                    "gpt-5.4":      { ctx: "1M",   maxOut: "128K", inUsd: 2.50,  outUsd: 15.00, tip: "品質/價格平衡，多數情況下足夠。" },
+                    "gpt-5.4-mini": { ctx: "400K", maxOut: "128K", inUsd: 0.75,  outUsd: 4.50,  tip: "推薦：性價比最高，本工具預設模型。" },
+                    "gpt-4o":       { ctx: "128K", maxOut: "16K",  inUsd: 2.50,  outUsd: 10.00, tip: "舊款旗艦，僅在需要時使用。" },
+                    "o1":           { ctx: "200K", maxOut: "100K", inUsd: 15.00, outUsd: 60.00, tip: "舊推理模型；非常昂貴。" },
+                    "o1-mini":      { ctx: "128K", maxOut: "65K",  inUsd: 3.00,  outUsd: 12.00, tip: "舊推理模型 (小)。" },
+                    "o3":           { ctx: "200K", maxOut: "100K", inUsd: 10.00, outUsd: 40.00, tip: "舊推理模型；昂貴。" },
+                    "o3-mini":      { ctx: "200K", maxOut: "100K", inUsd: 1.10,  outUsd: 4.40,  tip: "舊推理模型 (小)。" },
+                    "o4-mini":      { ctx: "200K", maxOut: "100K", inUsd: 1.10,  outUsd: 4.40,  tip: "舊推理模型 (小)。" },
+                    // Gemini
+                    "gemini-3.5-flash":      { ctx: "1M", maxOut: "65K", tip: "推薦：品質接近 Pro，價格與速度持平 Flash，本工具預設模型。" },
+                    "gemini-3.1-pro-preview":{ ctx: "1M", maxOut: "65K", tip: "Gemini 最強推理模型；適合長轉錄文字 / 多模態 / 程式碼倉庫。" },
+                    "gemini-3.1-flash-lite": { ctx: "1M", maxOut: "65K", tip: "最低延遲、最便宜，適合高流量或精打細算的場景。" },
+                };
+
+                function formatModelInfo(modelId) {
+                    const s = MODEL_SPECS[modelId];
+                    if (!s) return "";
+                    const price = (s.inUsd != null)
+                        ? `Input $${s.inUsd}/1M tokens · Output $${s.outUsd}/1M tokens`
+                        : "Gemini 定價請見官方頁面";
+                    return `Context ${s.ctx} · Max output ${s.maxOut} · ${price} — ${s.tip}`;
+                }
+
+                function refreshModelInfo() {
+                    $("#geminiModelInfo").text(formatModelInfo($("#geminiModel").val()));
+                    $("#openaiModelInfo").text(formatModelInfo($("#openaiModel").val()));
+                }
+
                 // 頁面加載時檢查初始狀態
                 updateModelVisibility();
-                
+                refreshModelInfo();
+
                 // 監聽選擇變更
                 $("#modelType").change(updateModelVisibility);
+                $("#geminiModel, #openaiModel").change(refreshModelInfo);
                 
                 // Cookies 文件上傳處理
                 $("#cookiesFile").change(function() {
@@ -1503,7 +1550,7 @@ async def home(request: Request):
                     showProcessingUI();
                     
                     // 獲取 OpenAI 模型選擇
-                    const openaiModel = $("#openaiModel").val() || "gpt-4o";
+                    const openaiModel = $("#openaiModel").val() || "gpt-5.4-mini";
                     const whisperModel = $("#whisperModel").val() || "gpt-4o-transcribe";
                     
                     // 創建請求數據
@@ -1751,9 +1798,20 @@ async def home(request: Request):
                     
                     // 先移除任何已存在的模型信息
                     $(".model-info").remove();
-                    
-                    // 顯示使用的模型信息（只添加一次）
-                    const modelInfo = $("<div>").addClass("model-info").text(`使用模型: ${result.model_used || "未知"}`);
+
+                    // 組合：使用模型 + token 用量（若可得）+ 預估成本
+                    const modelId = result.model_used || "未知";
+                    let infoText = `使用模型: ${modelId}`;
+                    const u = result.usage;
+                    if (u && (u.input || u.output || u.total)) {
+                        infoText += ` · Tokens 輸入 ${u.input || 0} / 輸出 ${u.output || 0} / 總計 ${u.total || (u.input + u.output) || 0}`;
+                        const spec = (typeof MODEL_SPECS !== "undefined") ? MODEL_SPECS[modelId] : null;
+                        if (spec && spec.inUsd != null) {
+                            const cost = ((u.input || 0) * spec.inUsd + (u.output || 0) * spec.outUsd) / 1e6;
+                            infoText += ` · 預估成本 $${cost.toFixed(4)}`;
+                        }
+                    }
+                    const modelInfo = $("<div>").addClass("model-info").text(infoText);
                     $("#title").after(modelInfo);
                     
                     // 渲染摘要內容

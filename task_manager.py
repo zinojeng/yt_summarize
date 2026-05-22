@@ -25,8 +25,8 @@ class Task:
     openai_api_key: str = ""
     google_api_key: str = ""
     model_type: str = "auto"
-    gemini_model: str = "gemini-3-flash-preview"
-    openai_model: str = "gpt-4o"
+    gemini_model: str = "gemini-3.5-flash"
+    openai_model: str = "gpt-5.4-mini"
     whisper_model: str = "gpt-4o-transcribe"  # 新增: Whisper 模型選擇
     progress: Dict[str, Any] = field(default_factory=dict)
     result: Optional[Dict[str, Any]] = None
@@ -115,8 +115,8 @@ class TaskManager:
     
     def create_task(self, task_id: str, url: str, keep_audio: bool = False, 
                    openai_api_key: str = "", google_api_key: str = "", 
-                   model_type: str = "auto", gemini_model: str = "gemini-3-flash-preview",
-                   openai_model: str = "gpt-4o", whisper_model: str = "gpt-4o-transcribe") -> Task:
+                   model_type: str = "auto", gemini_model: str = "gemini-3.5-flash",
+                   openai_model: str = "gpt-5.4-mini", whisper_model: str = "gpt-4o-transcribe") -> Task:
         """創建新任務"""
         with self.lock:
             task = Task(
