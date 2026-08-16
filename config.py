@@ -4,6 +4,28 @@
 import os
 from typing import Optional
 
+# 轉錄模型 (OpenAI 2026 新一代語音轉錄)
+# gpt-transcribe 取代 gpt-4o-transcribe 成為檔案轉錄的預設首選，
+# 支援 prompt / keywords / languages 提示，對中英夾雜、專有名詞辨識更佳。
+DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
+
+# 摘要模型 (2026)
+# OpenAI GPT-5.6 系列: sol (旗艦) / terra (智慧與成本平衡) / luna (最高性價比)
+DEFAULT_OPENAI_MODEL = "gpt-5.6-terra"
+# 性價比最高的選項，適合大量或成本敏感的工作
+HIGH_CP_OPENAI_MODEL = "gpt-5.6-luna"
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+
+# 前端下拉選單可選的轉錄模型 (value, 顯示名稱)
+SUPPORTED_TRANSCRIBE_MODELS = [
+    ("gpt-transcribe", "GPT Transcribe (推薦：新一代高精度，$0.0045/分鐘)"),
+    ("gpt-4o-transcribe", "GPT-4o Transcribe (前一代高精度)"),
+    ("gpt-4o-mini-transcribe", "GPT-4o Mini Transcribe (前一代低成本)"),
+    ("gpt-4o-transcribe-diarize", "GPT-4o Transcribe Diarize (標示不同講者)"),
+    ("whisper-1", "Whisper-1 (Legacy，需要時間戳記時使用)"),
+]
+
+
 class AppConfig:
     """應用程式配置"""
     

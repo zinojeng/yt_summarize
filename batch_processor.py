@@ -8,6 +8,11 @@ from dataclasses import dataclass
 import time
 from concurrent.futures import ThreadPoolExecutor
 from task_manager import task_manager
+from config import (
+    DEFAULT_TRANSCRIBE_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_GEMINI_MODEL,
+)
 from security import SecurityValidator
 
 logger = logging.getLogger(__name__)
@@ -20,8 +25,9 @@ class BatchRequest:
     openai_api_key: str = ""
     google_api_key: str = ""
     model_type: str = "auto"
-    gemini_model: str = "gemini-2.5-flash-preview-05-20"
-    openai_model: str = "gpt-4o"
+    gemini_model: str = DEFAULT_GEMINI_MODEL
+    openai_model: str = DEFAULT_OPENAI_MODEL
+    whisper_model: str = DEFAULT_TRANSCRIBE_MODEL
     batch_id: str = ""
 
 @dataclass
@@ -97,7 +103,8 @@ class BatchProcessor:
                 google_api_key=batch_request.google_api_key,
                 model_type=batch_request.model_type,
                 gemini_model=batch_request.gemini_model,
-                openai_model=batch_request.openai_model
+                openai_model=batch_request.openai_model,
+                whisper_model=batch_request.whisper_model
             )
             batch_status.task_ids.append(task_id)
         

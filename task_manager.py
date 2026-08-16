@@ -10,7 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import json
 import os
-from config import AppConfig
+from config import (
+    AppConfig,
+    DEFAULT_TRANSCRIBE_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_GEMINI_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +30,13 @@ class Task:
     openai_api_key: str = ""
     google_api_key: str = ""
     model_type: str = "auto"
-    gemini_model: str = "gemini-3.5-flash"
-    openai_model: str = "gpt-5.4-mini"
-    whisper_model: str = "gpt-4o-transcribe"  # 新增: Whisper 模型選擇
+    gemini_model: str = DEFAULT_GEMINI_MODEL
+    openai_model: str = DEFAULT_OPENAI_MODEL
+    whisper_model: str = DEFAULT_TRANSCRIBE_MODEL  # 使用者選擇的轉錄模型
+    # 實際送出的轉錄模型 (模型未開通時會降級)，供事後稽核
+    resolved_transcribe_model: str = ""
+    transcribe_keywords: List[str] = field(default_factory=list)
+    transcribe_languages: List[str] = field(default_factory=list)
     progress: Dict[str, Any] = field(default_factory=dict)
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
@@ -47,6 +56,9 @@ class Task:
             "gemini_model": self.gemini_model,
             "openai_model": self.openai_model,
             "whisper_model": self.whisper_model,
+            "resolved_transcribe_model": self.resolved_transcribe_model,
+            "transcribe_keywords": self.transcribe_keywords,
+            "transcribe_languages": self.transcribe_languages,
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
@@ -115,8 +127,11 @@ class TaskManager:
     
     def create_task(self, task_id: str, url: str, keep_audio: bool = False, 
                    openai_api_key: str = "", google_api_key: str = "", 
-                   model_type: str = "auto", gemini_model: str = "gemini-3.5-flash",
-                   openai_model: str = "gpt-5.4-mini", whisper_model: str = "gpt-4o-transcribe") -> Task:
+                   model_type: str = "auto", gemini_model: str = DEFAULT_GEMINI_MODEL,
+                   openai_model: str = DEFAULT_OPENAI_MODEL,
+                   whisper_model: str = DEFAULT_TRANSCRIBE_MODEL,
+                   transcribe_keywords: Optional[List[str]] = None,
+                   transcribe_languages: Optional[List[str]] = None) -> Task:
         """創建新任務"""
         with self.lock:
             task = Task(
@@ -130,7 +145,9 @@ class TaskManager:
                 model_type=model_type,
                 gemini_model=gemini_model,
                 openai_model=openai_model,
-                whisper_model=whisper_model
+                whisper_model=whisper_model,
+                transcribe_keywords=transcribe_keywords or [],
+                transcribe_languages=transcribe_languages or []
             )
             self.tasks[task_id] = task
             logger.info(f"創建新任務: {task_id}")
@@ -246,7 +263,12 @@ class TaskManager:
                         openai_api_key=task_data.get('openai_api_key', ''),
                         google_api_key=task_data.get('google_api_key', ''),
                         model_type=task_data.get('model_type', 'auto'),
-                        whisper_model=task_data.get('whisper_model', 'gpt-4o-transcribe'),
+                        gemini_model=task_data.get('gemini_model', DEFAULT_GEMINI_MODEL),
+                        openai_model=task_data.get('openai_model', DEFAULT_OPENAI_MODEL),
+                        whisper_model=task_data.get('whisper_model', DEFAULT_TRANSCRIBE_MODEL),
+                        resolved_transcribe_model=task_data.get('resolved_transcribe_model', ''),
+                        transcribe_keywords=task_data.get('transcribe_keywords', []) or [],
+                        transcribe_languages=task_data.get('transcribe_languages', []) or [],
                         progress=task_data.get('progress', {}),
                         result=task_data.get('result'),
                         error=task_data.get('error'),

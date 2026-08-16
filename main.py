@@ -5,18 +5,26 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 import uvicorn
 import os
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager  # Added for lifespan
 
 # 導入新的模塊
-from config import AppConfig
+from config import (
+    AppConfig,
+    DEFAULT_TRANSCRIBE_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_GEMINI_MODEL,
+    SUPPORTED_TRANSCRIBE_MODELS,
+)
 from security import SecurityValidator, CookiesValidator
 from task_manager import task_manager
 from error_handler import ErrorHandler, retry_on_error, RetryConfig
@@ -113,13 +121,76 @@ app.add_middleware(
 templates = Jinja2Templates(directory=AppConfig.TEMPLATES_DIR)
 print(f"模板目錄: {AppConfig.TEMPLATES_DIR}")
 
+# 轉錄提示的長度上限，避免使用者貼進整篇文章
+MAX_TRANSCRIBE_HINTS = 100
+MAX_TRANSCRIBE_HINT_LENGTH = 80
+VALID_TRANSCRIBE_MODELS = {value for value, _label in SUPPORTED_TRANSCRIBE_MODELS}
+
+
+# 轉錄關鍵字禁止換行與角括號，否則 OpenAI API 會整個請求退回
+_HINT_FORBIDDEN = re.compile(r"[<>\r\n\t]")
+# ISO-639-1 兩碼語言代碼 (完整清單)，避免把 "zzz" 之類的無效碼送進 API
+ISO_639_1_CODES = frozenset("""
+aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ce ch co cr cs
+cu cv cy da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv
+ha he hi ho hr ht hu hy hz ia id ie ig ii ik io is it iu ja jv ka kg ki kj kk kl
+km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms mt
+my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru
+rw sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn
+to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo za zh zu
+""".split())
+
+
+def parse_hint_list(raw, as_language: bool = False) -> Optional[List[str]]:
+    """把前端傳來的關鍵字/語言提示正規化成字串列表
+
+    接受逗號 (半形或全形) 分隔的字串或字串陣列，去除空白、控制字元與
+    API 不接受的角括號；語言則只保留合法的 ISO-639-1 代碼。
+    """
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        items = raw.replace("，", ",").split(",")
+    elif isinstance(raw, list):
+        items = [str(item) for item in raw]
+    else:
+        return None
+
+    cleaned = []
+    for item in items:
+        item = _HINT_FORBIDDEN.sub(" ", str(item)).strip()
+        item = item[:MAX_TRANSCRIBE_HINT_LENGTH].strip()
+        if not item:
+            continue
+        if as_language:
+            item = item.lower()
+            if item not in ISO_639_1_CODES:
+                logger.warning(f"忽略不合法的 ISO-639-1 語言代碼: {item}")
+                continue
+        if item not in cleaned:
+            cleaned.append(item)
+    return cleaned[:MAX_TRANSCRIBE_HINTS] or None
+
+
+def validate_transcribe_model(model) -> str:
+    """僅允許已知的轉錄模型，避免把任意字串送到 OpenAI API"""
+    if isinstance(model, str) and model in VALID_TRANSCRIBE_MODELS:
+        return model
+    if model:
+        logger.warning(f"未知的轉錄模型 {model!r}，改用預設 {DEFAULT_TRANSCRIBE_MODEL}")
+    return DEFAULT_TRANSCRIBE_MODEL
+
+
 # 定義請求模型
 class SummaryRequest(BaseModel):
     url: HttpUrl
     keep_audio: bool = False
     openai_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
-    whisper_model: Optional[str] = "gpt-4o-transcribe"
+    whisper_model: Optional[str] = DEFAULT_TRANSCRIBE_MODEL
+    # UI 送逗號分隔字串，API 也接受陣列，兩種都收
+    transcribe_keywords: Optional[Union[str, List[str]]] = None
+    transcribe_languages: Optional[Union[str, List[str]]] = None
 
 # API 端點: 提交摘要請求
 @app.post("/api/summarize")
@@ -131,9 +202,13 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
-        gemini_model = data.get("gemini_model", "gemini-3.5-flash")
-        openai_model = data.get("openai_model", "gpt-5.4-mini")
-        whisper_model = data.get("whisper_model", "gpt-4o-transcribe")
+        gemini_model = data.get("gemini_model") or DEFAULT_GEMINI_MODEL
+        openai_model = data.get("openai_model") or DEFAULT_OPENAI_MODEL
+        whisper_model = validate_transcribe_model(data.get("whisper_model"))
+        transcribe_keywords = parse_hint_list(data.get("transcribe_keywords"))
+        transcribe_languages = parse_hint_list(
+            data.get("transcribe_languages"), as_language=True
+        )
         
         # 驗證 URL
         url_validation = SecurityValidator.validate_youtube_url(url)
@@ -168,7 +243,9 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             model_type=model_type,
             gemini_model=gemini_model,
             openai_model=openai_model,
-            whisper_model=whisper_model
+            whisper_model=whisper_model,
+            transcribe_keywords=transcribe_keywords,
+            transcribe_languages=transcribe_languages
         )
         
         # 啟動背景處理任務
@@ -182,7 +259,9 @@ async def summarize_video(request: Request, background_tasks: BackgroundTasks):
             model_type=model_type,
             gemini_model=gemini_model,
             openai_model=openai_model,
-            whisper_model=whisper_model
+            whisper_model=whisper_model,
+            transcribe_keywords=transcribe_keywords,
+            transcribe_languages=transcribe_languages
         )
         
         return {"task_id": task_id}
@@ -199,9 +278,11 @@ async def process_video(
     openai_api_key: str, 
     google_api_key: str = None,
     model_type: str = "auto",
-    gemini_model: str = "gemini-3.5-flash",
-    openai_model: str = "gpt-5.4-mini",
-    whisper_model: str = "gpt-4o-transcribe"
+    gemini_model: str = DEFAULT_GEMINI_MODEL,
+    openai_model: str = DEFAULT_OPENAI_MODEL,
+    whisper_model: str = DEFAULT_TRANSCRIBE_MODEL,
+    transcribe_keywords: Optional[List[str]] = None,
+    transcribe_languages: Optional[List[str]] = None
 ):
     try:
         # 更新任務狀態
@@ -256,11 +337,15 @@ async def process_video(
                 model_type=model_type,
                 gemini_model=gemini_model,
                 openai_model=openai_model,
-                whisper_model=whisper_model
+                whisper_model=whisper_model,
+                transcribe_keywords=transcribe_keywords,
+                transcribe_languages=transcribe_languages
             )
         
         try:
-            result = process_with_retry()
+            # process_with_retry 是同步且長時間執行的，直接在
+            # async 函式裡呼叫會卡住整個 event loop，讓其他請求無法回應
+            result = await run_in_threadpool(process_with_retry)
         except Exception as e:
             # 如果重試後仍然失敗，嘗試優雅降級
             if ErrorHandler.is_retryable(e):
@@ -274,8 +359,24 @@ async def process_video(
         processing_time = time.time() - start_time if 'start_time' in locals() else 0
         metrics_collector.record_request(True, processing_time)
         
-        # 更新任務結果
-        task_manager.update_task_status(task_id, "complete", result=result)
+        # run_summary_process 失敗時是回傳 status=error 而非拋例外，
+        # 因此必須檢查後才能標記完成，否則會把失敗當成功回報給使用者
+        resolved_model = (result or {}).get("transcribe_model_used", "") or ""
+        if (result or {}).get("status") == "error":
+            error_message = (result or {}).get("message") or "處理失敗"
+            logger.error(f"任務處理失敗 [{task_id}]: {error_message}")
+            metrics_collector.record_request(False, processing_time)
+            task_manager.update_task_status(
+                task_id, "error", error=error_message,
+                resolved_transcribe_model=resolved_model
+            )
+            return
+
+        # 更新任務結果，並記錄實際使用的轉錄模型 (可能因降級而不同)
+        task_manager.update_task_status(
+            task_id, "complete", result=result,
+            resolved_transcribe_model=resolved_model
+        )
     
     except Exception as e:
         # 記錄詳細錯誤信息
@@ -424,7 +525,7 @@ async def batch_summarize(request: Request, background_tasks: BackgroundTasks):
         openai_api_key = data.get("openai_api_key")
         google_api_key = data.get("google_api_key")
         model_type = data.get("model_type", "auto")
-        gemini_model = data.get("gemini_model", "gemini-3.5-flash")
+        gemini_model = data.get("gemini_model") or DEFAULT_GEMINI_MODEL
         
         if not urls or not isinstance(urls, list):
             return {"status": "error", "message": "請提供有效的 URL 列表"}
@@ -1249,11 +1350,27 @@ async def home(request: Request):
                     <div class="form-group">
                         <label for="whisperModel">轉錄模型:</label>
                         <select id="whisperModel" name="whisper_model">
-                            <option value="gpt-4o-transcribe">GPT-4o Transcribe (高品質)</option>
-                            <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe (快速/經濟)</option>
+                            <option value="gpt-transcribe" selected>GPT Transcribe (推薦：新一代高精度，$0.0045/分鐘)</option>
+                            <option value="gpt-4o-transcribe">GPT-4o Transcribe (前一代高精度)</option>
+                            <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe (前一代低成本)</option>
+                            <option value="gpt-4o-transcribe-diarize">GPT-4o Transcribe Diarize (標示不同講者)</option>
+                            <option value="whisper-1">Whisper-1 (Legacy)</option>
                         </select>
+                        <p class="api-note model-info-note" id="whisperModelInfo"></p>
                     </div>
-                    
+
+                    <div class="form-group" id="transcribeHintsGroup">
+                        <label for="transcribeKeywords">轉錄關鍵字提示 (選填):</label>
+                        <input type="text" id="transcribeKeywords" name="transcribe_keywords"
+                               placeholder="以逗號分隔，例如: tirzepatide, empagliflozin, HbA1c">
+                        <p class="api-note">提供影片中會出現的專有名詞 (藥名、縮寫、人名)，可大幅提升辨識準確度。僅 GPT Transcribe 支援。</p>
+
+                        <label for="transcribeLanguages">預期語言 (選填):</label>
+                        <input type="text" id="transcribeLanguages" name="transcribe_languages"
+                               placeholder="ISO-639-1 代碼，以逗號分隔，例如: zh, en">
+                        <p class="api-note">影片為中英夾雜時填寫 <code>zh, en</code>，可改善 code-switching 的轉錄品質。僅 GPT Transcribe 支援。</p>
+                    </div>
+
                     <input type="password" id="googleKey" name="google_api_key" placeholder="Google API 金鑰 (選填)">
                     <p class="api-note">Google API 金鑰可選，用於 Gemini 模型。若提供，將優先使用 Gemini 進行摘要生成。</p>
                     
@@ -1269,7 +1386,9 @@ async def home(request: Request):
                     <div class="form-group" id="geminiModelGroup" style="display: none;">
                         <label for="geminiModel">Gemini 模型選擇:</label>
                         <select id="geminiModel" name="gemini_model">
-                            <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash (推薦：品質接近 Pro，價格與速度持平 Flash)</option>
+                            <option value="gemini-3.6-flash" selected>Gemini 3.6 Flash (推薦：最新一代，輸出比 3.5 更便宜)</option>
+                            <option value="gemini-3.5-flash">Gemini 3.5 Flash (前一代)</option>
+                            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (低成本)</option>
                             <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (最強推理，適合長文/複雜內容)</option>
                             <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite (最便宜、最低延遲，適合高流量)</option>
                         </select>
@@ -1279,9 +1398,12 @@ async def home(request: Request):
                     <div class="form-group" id="openaiModelGroup" style="display: none;">
                         <label for="openaiModel">OpenAI 模型選擇:</label>
                         <select id="openaiModel" name="openai_model">
-                            <option value="gpt-5.4-mini" selected>GPT-5.4 mini (推薦：性價比最高)</option>
-                            <option value="gpt-5.4">GPT-5.4 (品質/價格平衡的旗艦)</option>
-                            <option value="gpt-5.5">GPT-5.5 (最強推理，適合最複雜內容)</option>
+                            <option value="gpt-5.6-terra" selected>GPT-5.6 Terra (推薦：智慧與成本平衡)</option>
+                            <option value="gpt-5.6-luna">GPT-5.6 Luna (★ 性價比最高：$0.20/$1.20，適合大量處理)</option>
+                            <option value="gpt-5.6-sol">GPT-5.6 Sol (旗艦：最強推理，適合最複雜內容)</option>
+                            <option value="gpt-5.5">GPT-5.5 (前一代最強推理)</option>
+                            <option value="gpt-5.4">GPT-5.4 (前一代旗艦)</option>
+                            <option value="gpt-5.4-mini">GPT-5.4 mini (前一代性價比款)</option>
                             <option value="gpt-4o">GPT-4o (舊款旗艦)</option>
                             <option value="o1">o1 (舊推理模型)</option>
                             <option value="o1-mini">o1-mini (舊推理模型 - 快速)</option>
@@ -1458,7 +1580,10 @@ async def home(request: Request):
                     // OpenAI
                     "gpt-5.5":      { ctx: "1M",   maxOut: "128K", inUsd: 5.00,  outUsd: 30.00, tip: "最強推理；適合長轉錄文字、需要深度分析的內容。較貴。" },
                     "gpt-5.4":      { ctx: "1M",   maxOut: "128K", inUsd: 2.50,  outUsd: 15.00, tip: "品質/價格平衡，多數情況下足夠。" },
-                    "gpt-5.4-mini": { ctx: "400K", maxOut: "128K", inUsd: 0.75,  outUsd: 4.50,  tip: "推薦：性價比最高，本工具預設模型。" },
+                    "gpt-5.6-sol":   { ctx: "1.05M", maxOut: "128K", inUsd: 5.00, outUsd: 30.00, tip: "旗艦：最強推理，適合最複雜的專業內容。較貴。" },
+                    "gpt-5.6-terra": { ctx: "1.05M", maxOut: "128K", inUsd: 2.00, outUsd: 12.00, tip: "推薦：智慧與成本平衡，本工具預設模型。" },
+                    "gpt-5.6-luna":  { ctx: "1.05M", maxOut: "128K", inUsd: 0.20, outUsd: 1.20,  tip: "★ 性價比最高：同樣 1.05M 上下文，價格僅 Terra 的 1/10，適合大量或成本敏感的工作。" },
+                    "gpt-5.4-mini":  { ctx: "400K", maxOut: "128K", inUsd: 0.75,  outUsd: 4.50,  tip: "前一代性價比款。" },
                     "gpt-4o":       { ctx: "128K", maxOut: "16K",  inUsd: 2.50,  outUsd: 10.00, tip: "舊款旗艦，僅在需要時使用。" },
                     "o1":           { ctx: "200K", maxOut: "100K", inUsd: 15.00, outUsd: 60.00, tip: "舊推理模型；非常昂貴。" },
                     "o1-mini":      { ctx: "128K", maxOut: "65K",  inUsd: 3.00,  outUsd: 12.00, tip: "舊推理模型 (小)。" },
@@ -1466,10 +1591,33 @@ async def home(request: Request):
                     "o3-mini":      { ctx: "200K", maxOut: "100K", inUsd: 1.10,  outUsd: 4.40,  tip: "舊推理模型 (小)。" },
                     "o4-mini":      { ctx: "200K", maxOut: "100K", inUsd: 1.10,  outUsd: 4.40,  tip: "舊推理模型 (小)。" },
                     // Gemini
-                    "gemini-3.5-flash":      { ctx: "1M", maxOut: "65K", tip: "推薦：品質接近 Pro，價格與速度持平 Flash，本工具預設模型。" },
-                    "gemini-3.1-pro-preview":{ ctx: "1M", maxOut: "65K", tip: "Gemini 最強推理模型；適合長轉錄文字 / 多模態 / 程式碼倉庫。" },
-                    "gemini-3.1-flash-lite": { ctx: "1M", maxOut: "65K", tip: "最低延遲、最便宜，適合高流量或精打細算的場景。" },
+                    "gemini-3.6-flash":      { ctx: "1M", maxOut: "65K", inUsd: 1.50, outUsd: 7.50,  tip: "推薦：最新一代，輸出比 3.5 Flash 便宜，本工具預設 Gemini 模型。" },
+                    "gemini-3.5-flash":      { ctx: "1M", maxOut: "65K", inUsd: 1.50, outUsd: 9.00,  tip: "前一代 Flash。" },
+                    "gemini-3.5-flash-lite": { ctx: "1M", maxOut: "65K", inUsd: 0.30, outUsd: 2.50,  tip: "低成本選項。" },
+                    "gemini-3.1-pro-preview":{ ctx: "1M", maxOut: "65K", inUsd: 2.00, outUsd: 12.00, tip: "Gemini 最強推理模型；適合長轉錄文字 / 多模態 / 程式碼倉庫。" },
+                    "gemini-3.1-flash-lite": { ctx: "1M", maxOut: "65K", inUsd: 0.25, outUsd: 1.50, tip: "最低延遲、最便宜，適合高流量或精打細算的場景。" },
                 };
+
+                // 轉錄模型規格 (USD 為每分鐘音訊)
+                const TRANSCRIBE_SPECS = {
+                    "gpt-transcribe":            { usdPerMin: 0.0045, hints: true,  tip: "推薦：新一代高精度，支援關鍵字/多語言提示，適合中英夾雜的醫學演講。" },
+                    "gpt-4o-transcribe":         { usdPerMin: 0.0060, hints: false, tip: "前一代高精度模型；既有整合仍可使用。" },
+                    "gpt-4o-mini-transcribe":    { usdPerMin: 0.0030, hints: false, tip: "前一代低成本模型，適合大量、成本敏感的工作。" },
+                    "gpt-4o-transcribe-diarize": { usdPerMin: 0.0060, hints: false, tip: "會標示 Speaker 1 / Speaker 2；僅在需要分辨講者時使用。" },
+                    "whisper-1":                 { usdPerMin: 0.0060, hints: false, tip: "Legacy 模型；需要 timestamp / SRT 字幕時才用。" },
+                };
+
+                function refreshTranscribeInfo() {
+                    const modelId = $("#whisperModel").val();
+                    const s = TRANSCRIBE_SPECS[modelId];
+                    if (!s) {
+                        $("#whisperModelInfo").text("");
+                        return;
+                    }
+                    $("#whisperModelInfo").text(`約 $${s.usdPerMin}/分鐘音訊 — ${s.tip}`);
+                    // 僅在模型支援時顯示關鍵字/語言提示欄位
+                    $("#transcribeHintsGroup").toggle(!!s.hints);
+                }
 
                 function formatModelInfo(modelId) {
                     const s = MODEL_SPECS[modelId];
@@ -1488,10 +1636,12 @@ async def home(request: Request):
                 // 頁面加載時檢查初始狀態
                 updateModelVisibility();
                 refreshModelInfo();
+                refreshTranscribeInfo();
 
                 // 監聽選擇變更
                 $("#modelType").change(updateModelVisibility);
                 $("#geminiModel, #openaiModel").change(refreshModelInfo);
+                $("#whisperModel").change(refreshTranscribeInfo);
                 
                 // Cookies 分頁切換
                 $(".cookies-tab").on("click", function() {
@@ -1644,9 +1794,10 @@ async def home(request: Request):
                     showProcessingUI();
                     
                     // 獲取 OpenAI 模型選擇
-                    const openaiModel = $("#openaiModel").val() || "gpt-5.4-mini";
-                    const whisperModel = $("#whisperModel").val() || "gpt-4o-transcribe";
-                    
+                    const openaiModel = $("#openaiModel").val() || "gpt-5.6-terra";
+                    const whisperModel = $("#whisperModel").val() || "gpt-transcribe";
+                    const supportsHints = !!(TRANSCRIBE_SPECS[whisperModel] || {}).hints;
+
                     // 創建請求數據
                     const requestData = {
                         url: youtubeUrl,
@@ -1658,6 +1809,14 @@ async def home(request: Request):
                         openai_model: openaiModel,
                         whisper_model: whisperModel
                     };
+
+                    // 關鍵字/語言提示只有部分模型支援，未支援時不送出
+                    if (supportsHints) {
+                        const keywords = ($("#transcribeKeywords").val() || "").trim();
+                        const languages = ($("#transcribeLanguages").val() || "").trim();
+                        if (keywords) requestData.transcribe_keywords = keywords;
+                        if (languages) requestData.transcribe_languages = languages;
+                    }
                     
                     // 發送AJAX請求
                     $.ajax({

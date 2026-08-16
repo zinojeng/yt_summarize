@@ -5,14 +5,15 @@
 ## ✨ 功能特點
 
 -   **自動下載 YouTube 影片**：支援多種格式，並自動提取最佳音訊。
--   **高品質語音轉文字**：使用 OpenAI Whisper 模型進行準確的語音識別。
+-   **高品質語音轉文字**：使用 OpenAI `gpt-transcribe` (2026 新一代) 進行準確的語音識別，
+    支援關鍵字與多語言提示，對中英夾雜的專業內容特別有效。
 -   **多格式文件下載**：
     -   📄 **Word DOCX 格式** - 完整保留 Markdown 格式轉換
     -   📝 **Markdown 格式** - 原始摘要格式
     -   📋 **逐字稿 TXT** - 完整轉錄內容
 -   **智慧摘要生成**：
-    -   優先使用 Google Gemini 模型 (`gemini-2.5-flash-preview-05-20`) 生成摘要。
-    -   若 Gemini 不可用或失敗，自動切換至 OpenAI 模型 (`gpt-3.5-turbo`) 作為備用。
+    -   優先使用 Google Gemini 模型 (`gemini-3.6-flash`) 生成摘要。
+    -   若 Gemini 不可用或失敗，自動切換至 OpenAI 模型 (`gpt-5.6-terra`) 作為備用。
     -   生成結構化、重點突出、排版優化的 Markdown 格式摘要。
     -   持續優化的提示工程以提升摘要品質與緊湊度。
 -   **現代化 Web 介面 (FastAPI)**：
@@ -157,10 +158,34 @@
 
 本工具使用的主要 AI 模型：
 
--   **轉錄模型**: OpenAI 的 `whisper-1`
--   **摘要模型**:
-    -   主要: Google Gemini 的 `gemini-2.5-pro-exp-03-25`
-    -   備用: OpenAI 的 `gpt-3.5-turbo`
+-   **轉錄模型**: OpenAI 的 `gpt-transcribe` (2026 新一代高精度語音轉錄，$0.0045/分鐘)
+    -   可在 Web 介面切換為 `gpt-4o-transcribe`、`gpt-4o-mini-transcribe`、
+        `gpt-4o-transcribe-diarize` (標示講者) 或 `whisper-1` (Legacy)。
+    -   若帳號尚未開通新模型，程式會自動退回 `gpt-4o-transcribe`。
+-   **摘要模型** (2026 最新世代):
+    -   主要: Google Gemini 的 `gemini-3.6-flash` ($1.50 / $7.50 每 1M tokens)
+    -   備用: OpenAI 的 `gpt-5.6-terra` ($2 / $12 每 1M tokens，智慧與成本平衡)
+
+#### OpenAI GPT-5.6 系列性價比對照
+
+| 模型 | 上下文 | 輸入 / 輸出 (每 1M tokens) | 定位 |
+| --- | --- | --- | --- |
+| `gpt-5.6-sol` | 1.05M | $5 / $30 | 旗艦，最強推理 |
+| `gpt-5.6-terra` | 1.05M | $2 / $12 | **預設**，智慧與成本平衡 |
+| `gpt-5.6-luna` | 1.05M | $0.20 / $1.20 | **★ 性價比最高**，價格僅 Terra 的 1/10，適合大量處理 |
+
+三者上下文同為 1.05M。若要壓低成本，直接在 Web 介面切成 `gpt-5.6-luna`；
+若內容特別複雜 (深度分析、長篇醫學演講)，再往上選 `gpt-5.6-sol`。
+
+### 轉錄提示 (僅 `gpt-transcribe` 支援)
+
+`gpt-transcribe` 支援三種提示，可大幅改善專業術語與中英夾雜內容的辨識：
+
+-   **關鍵字提示 (`keywords`)**: 影片中會出現的藥名、縮寫、人名，
+    例如 `tirzepatide, empagliflozin, HbA1c`。
+-   **語言提示 (`languages`)**: ISO-639-1 代碼，中英夾雜填 `zh, en`，
+    改善 code-switching 的轉錄品質。
+-   **上下文 (`prompt`)**: 程式會自動帶入影片標題作為上下文。
 
 ## ⚠️ 注意事項
 

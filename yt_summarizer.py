@@ -6,8 +6,14 @@ import time
 import subprocess
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable
 import yt_dlp
+
+from config import (
+    DEFAULT_TRANSCRIBE_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_GEMINI_MODEL,
+)
 
 # 導入 Google Generative AI 模組
 try:
@@ -30,12 +36,51 @@ logging.basicConfig(
 load_dotenv()
 
 
+# 各轉錄模型支援的請求參數 (依 OpenAI 2026 官方文件)
+# prompt    : 非結構化上下文，協助辨識專有名詞
+# keywords  : 關鍵字提示 (藥名、縮寫、產品名)，僅新一代模型支援
+# languages : 預期語言清單 (ISO-639-1)，用於多語言/中英夾雜 code-switching
+TRANSCRIBE_MODEL_FEATURES = {
+    "gpt-transcribe": {"prompt": True, "keywords": True, "languages": True},
+    "gpt-4o-transcribe": {"prompt": True, "keywords": False, "languages": False},
+    "gpt-4o-mini-transcribe": {"prompt": True, "keywords": False, "languages": False},
+    # diarize 模型不支援 prompt，但需要 diarized_json 才會回傳講者標記
+    "gpt-4o-transcribe-diarize": {
+        "prompt": False, "keywords": False, "languages": False, "diarize": True
+    },
+    "whisper-1": {"prompt": True, "keywords": False, "languages": False},
+}
+
+# 若帳號尚未開通新模型 (model_not_found)，自動退回的舊模型
+TRANSCRIBE_MODEL_FALLBACK = {
+    "gpt-transcribe": "gpt-4o-transcribe",
+    "gpt-4o-transcribe-diarize": "gpt-4o-transcribe",
+    "gpt-4o-transcribe": "whisper-1",
+    "gpt-4o-mini-transcribe": "whisper-1",
+}
+
+# whisper-1 的 prompt 上限為 224 tokens，保守以字元數截斷
+WHISPER_PROMPT_MAX_CHARS = 400
+
+# 摘要輸出的 token 上限。推理模型的 reasoning token 也算在輸出預算內，
+# 舊值 2000 對這種「詳細筆記」型提示會被截斷，故放寬。
+SUMMARY_MAX_OUTPUT_TOKENS = 16000
+
+
 class YouTubeSummarizer:
     # 定義模型名稱常數
-    WHISPER_MODEL = "gpt-4o-transcribe"
-    GEMINI_MODEL = 'gemini-3.5-flash'
-    OPENAI_FALLBACK_MODEL = "gpt-5.4-mini"
-    DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+    # 2026 新一代高精度語音轉錄模型；gpt-4o-transcribe 系列仍可用但非首選
+    TRANSCRIBE_MODEL = DEFAULT_TRANSCRIBE_MODEL
+    WHISPER_MODEL = DEFAULT_TRANSCRIBE_MODEL  # 舊名稱保留相容
+    GEMINI_MODEL = DEFAULT_GEMINI_MODEL
+    OPENAI_FALLBACK_MODEL = DEFAULT_OPENAI_MODEL
+    OPENAI_MODEL = DEFAULT_OPENAI_MODEL
+
+    # OpenAI 轉錄 API 的單檔上限為 25 MB。官方未載明是十進位還是二進位，
+    # 因此直接比較位元組並取十進位 (較嚴格) 再留安全邊際，避免 413。
+    MAX_TRANSCRIBE_FILE_BYTES = 24_000_000
+    # 單次請求的音訊長度上限約 1400 秒，閾值設保守值
+    MAX_TRANSCRIBE_SECONDS = 1300
 
     # o-series 推理模型列表
     O_SERIES_MODELS = {"o1", "o1-preview", "o1-mini", "o3", "o3-mini", "o4-mini"}
@@ -47,12 +92,15 @@ class YouTubeSummarizer:
                  progress_callback: Optional[Callable] = None,
                  cookie_file_path: Optional[str] = None,
                  model_preference: str = 'auto',
-                 gemini_model: str = 'gemini-3.5-flash',
-                 openai_model: str = 'gpt-5.4-mini',
-                 whisper_model: str = 'gpt-4o-transcribe'):
+                 gemini_model: str = DEFAULT_GEMINI_MODEL,
+                 openai_model: str = DEFAULT_OPENAI_MODEL,
+                 whisper_model: str = DEFAULT_TRANSCRIBE_MODEL,
+                 transcribe_keywords: Optional[List[str]] = None,
+                 transcribe_languages: Optional[List[str]] = None,
+                 transcribe_prompt: Optional[str] = None):
         """
         初始化 YouTube 摘要器
-        
+
         參數:
             api_keys (Dict): API 金鑰字典，包含 'openai' 和 'gemini' 鍵
             keep_audio (bool): 是否保留音訊檔案
@@ -62,7 +110,12 @@ class YouTubeSummarizer:
             model_preference (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
             gemini_model (str): 使用的 Gemini 模型名稱
             openai_model (str): 使用的 OpenAI 模型名稱
-            whisper_model (str): 使用的 Whisper 模型名稱
+            whisper_model (str): 使用的轉錄模型名稱 (預設 gpt-transcribe)
+            transcribe_keywords (List[str]): 關鍵字提示，例如藥名/縮寫，
+                僅 gpt-transcribe 支援
+            transcribe_languages (List[str]): 預期語言的 ISO-639-1 代碼，
+                例如 ['zh', 'en']，用於中英夾雜內容
+            transcribe_prompt (str): 額外的轉錄上下文提示
         """
         self.api_keys = api_keys or {}
         if 'openai' not in self.api_keys:
@@ -75,7 +128,19 @@ class YouTubeSummarizer:
         self.model_preference = model_preference
         self.gemini_model = gemini_model
         self.openai_model = openai_model
-        self.whisper_model = whisper_model
+        self.whisper_model = whisper_model or DEFAULT_TRANSCRIBE_MODEL
+        # 實際送出的轉錄模型；若帳號未開通會在執行期退回舊模型
+        self.active_transcribe_model = self.whisper_model
+        # 若 API 回報不支援提示參數，設為 True 讓後續分段直接用基本參數
+        self.transcribe_hints_disabled = False
+        self.transcribe_keywords = [
+            k.strip() for k in (transcribe_keywords or []) if k and k.strip()
+        ]
+        self.transcribe_languages = [
+            lang.strip().lower()
+            for lang in (transcribe_languages or []) if lang and lang.strip()
+        ]
+        self.transcribe_prompt = (transcribe_prompt or '').strip()
         self.cookie_file_path = cookie_file_path
         if self.cookie_file_path and not os.path.exists(self.cookie_file_path):
             logging.warning(f"提供的 Cookie 檔案路徑不存在: {self.cookie_file_path}")
@@ -153,6 +218,18 @@ class YouTubeSummarizer:
     def is_o_series_model(self, model_name: str) -> bool:
         """檢查是否為 o-series 推理模型"""
         return model_name in self.O_SERIES_MODELS
+
+    def is_reasoning_model(self, model_name: str) -> bool:
+        """檢查是否為推理模型 (o-series 或 GPT-5 以後的世代)
+
+        推理模型不吃 temperature，且輸出預算要用 max_completion_tokens；
+        推理 token 也會吃掉輸出預算，因此額度必須開得比一般模型大。
+        """
+        return (
+            self.is_o_series_model(model_name)
+            or model_name.startswith("gpt-5")
+            or model_name.startswith("gpt-6")
+        )
 
     def setup_directories(self):
         """建立必要的目錄結構"""
@@ -441,12 +518,181 @@ class YouTubeSummarizer:
                 "message": f"下載影片時發生錯誤: {str(e)}"
             }
 
-    def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
+    def _build_transcription_kwargs(
+        self, model: str, context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """依模型支援度組出轉錄請求的額外參數
+
+        keywords / languages 是新一代 gpt-transcribe 才有的欄位，
+        目前 openai-python SDK 尚未有具名參數，需透過 extra_body 送出。
+        """
+        features = TRANSCRIBE_MODEL_FEATURES.get(
+            model, {"prompt": True, "keywords": False, "languages": False}
+        )
+        kwargs: Dict[str, Any] = {}
+
+        if features.get("prompt"):
+            prompt_parts = []
+            if context:
+                prompt_parts.append(f"這是影片「{context}」的錄音內容。")
+            if self.transcribe_prompt:
+                prompt_parts.append(self.transcribe_prompt)
+            prompt = " ".join(prompt_parts).strip()
+            if prompt:
+                # whisper-1 的 prompt 上限為 224 tokens
+                if model == "whisper-1":
+                    prompt = prompt[:WHISPER_PROMPT_MAX_CHARS]
+                kwargs["prompt"] = prompt
+
+        extra_body: Dict[str, Any] = {}
+        if features.get("keywords") and self.transcribe_keywords:
+            extra_body["keywords"] = self.transcribe_keywords
+        if features.get("languages") and self.transcribe_languages:
+            extra_body["languages"] = self.transcribe_languages
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+        return kwargs
+
+    @staticmethod
+    def _required_transcription_kwargs(model: str) -> Dict[str, Any]:
+        """模型運作所必需、降級時也不能拿掉的參數
+
+        diarize 模型必須指定 diarized_json 才會回傳講者標記，
+        且超過 30 秒的音訊需要 chunking_strategy。這些與「提示」不同，
+        拿掉之後模型就不做它被選來做的事，因此不參與提示降級。
+        """
+        features = TRANSCRIBE_MODEL_FEATURES.get(model, {})
+        if features.get("diarize"):
+            return {
+                "response_format": "diarized_json",
+                "chunking_strategy": "auto",
+            }
+        return {}
+
+    @staticmethod
+    def _extract_transcript_text(response: Any) -> str:
+        """從轉錄回應取出文字，支援 diarized_json 的講者分段格式"""
+        segments = getattr(response, "segments", None)
+        if segments:
+            lines = []
+            current_speaker = None
+            for seg in segments:
+                speaker = getattr(seg, "speaker", None)
+                text = (getattr(seg, "text", "") or "").strip()
+                if not text:
+                    continue
+                if speaker and speaker != current_speaker:
+                    lines.append(f"\n[{speaker}] {text}")
+                    current_speaker = speaker
+                else:
+                    lines.append(text)
+            joined = " ".join(lines).strip()
+            if joined:
+                return joined
+
+        text = getattr(response, "text", None)
+        if text:
+            return text
+        # 極少數情況下 SDK 只回傳原始 dict
+        if isinstance(response, dict):
+            return response.get("text", "") or ""
+        return ""
+
+    @staticmethod
+    def _is_model_not_found_error(error: Exception) -> bool:
+        """判斷例外是否為「模型不存在 / 未開通」"""
+        message = str(error).lower()
+        return (
+            "model_not_found" in message
+            or "does not exist" in message
+            or "invalid model" in message
+            or ("model" in message and "not found" in message)
+        )
+
+    @staticmethod
+    def _is_unsupported_param_error(error: Exception) -> bool:
+        """判斷例外是否為「不支援的參數」(舊 SDK 或舊模型)"""
+        message = str(error).lower()
+        return (
+            isinstance(error, TypeError)
+            or "unknown parameter" in message
+            or "unrecognized" in message
+            or "unsupported_parameter" in message
+            or "extra fields not permitted" in message
+            or "does not support" in message
+        )
+
+    def _transcribe_segment(
+        self, segment_path: str, context: Optional[str] = None
+    ) -> str:
+        """轉錄單一音訊分段，並在必要時降級參數或模型後重試
+
+        降級順序:
+        1. 以目前模型 + 完整提示參數呼叫
+        2. 參數不被支援 → 移除 prompt/keywords/languages 重試
+        3. 模型不存在/未開通 → 退回對應舊模型 (並記住供後續分段使用)
+        """
+        model = self.active_transcribe_model
+        attempted_models = set()
+        last_error: Optional[Exception] = None
+
+        while True:
+            attempted_models.add(model)
+            required = self._required_transcription_kwargs(model)
+            hints = {} if self.transcribe_hints_disabled else \
+                self._build_transcription_kwargs(model, context)
+
+            for use_hints in (True, False):
+                # required 一律保留；只有提示參數會被降級掉
+                call_kwargs = {**required, **hints} if use_hints else dict(required)
+                try:
+                    with open(segment_path, "rb") as audio_file:
+                        response = self.openai_client.audio.transcriptions.create(
+                            model=model,
+                            file=audio_file,
+                            **call_kwargs
+                        )
+                    # 成功後記住實際可用的模型，避免每段都重試一次失敗模型
+                    self.active_transcribe_model = model
+                    return self._extract_transcript_text(response)
+                except Exception as e:
+                    last_error = e
+                    if self._is_model_not_found_error(e):
+                        break  # 跳出參數重試，改為換模型
+                    if use_hints and call_kwargs and \
+                            self._is_unsupported_param_error(e):
+                        logging.warning(
+                            f"模型 {model} 不支援部分轉錄參數 ({e})，改用基本參數重試"
+                        )
+                        # 記住此模型不吃提示參數，後續分段不必重試一次失敗請求
+                        self.transcribe_hints_disabled = True
+                        continue
+                    raise
+
+            fallback = TRANSCRIBE_MODEL_FALLBACK.get(model)
+            if not fallback or fallback in attempted_models:
+                raise RuntimeError(
+                    f"轉錄模型 {model} 無法使用，且沒有可用的替代模型。"
+                    f"請確認 OpenAI 帳號是否已開通該模型。原始錯誤: {last_error}"
+                ) from last_error
+            # 換模型後重新啟用提示參數（新模型可能支援）
+            self.transcribe_hints_disabled = False
+            logging.warning(f"轉錄模型 {model} 不可用，改用 {fallback}")
+            self.progress_callback(
+                "轉錄", 25, f"模型 {model} 不可用，改用 {fallback} 轉錄..."
+            )
+            model = fallback
+
+    def transcribe_audio(
+        self, audio_path: str, context: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         將音訊檔案轉錄為文字
-        
+
         參數:
             audio_path (str): 音訊檔案路徑
+            context (Optional[str]): 影片標題等上下文，用於提升專有名詞辨識率
         返回:
             Dict: 包含轉錄結果的字典
         """
@@ -458,7 +704,8 @@ class YouTubeSummarizer:
                 raise FileNotFoundError(f"找不到音訊檔案: {audio_path}")
             
             # 檢查檔案大小和長度
-            file_size = os.path.getsize(audio_path) / (1024 * 1024)  # MB
+            file_bytes = os.path.getsize(audio_path)
+            file_size = file_bytes / (1024 * 1024)  # MiB，僅用於顯示與估算
             self.progress_callback("轉錄", 5, f"音訊檔案大小: {file_size:.2f} MB")
             
             # 計算估計的轉錄所需時間（用於顯示進度估計）
@@ -480,22 +727,30 @@ class YouTubeSummarizer:
                 self.progress_callback("轉錄", 15, "無法獲取精確音訊時長，繼續處理...")
                 audio_duration = None
             
-            # 音訊檔案處理
-            # Whisper / gpt-4o-transcribe API 限制是 1400 秒，閾值設 1300 秒以確保安全
-            # 若 ffprobe 失敗 (audio_duration is None)，使用檔案大小做保守估計：
-            # 192kbps mp3 → 約 1.44 MB/分鐘，>20 MB 大概率超過 1400s，須先分段
+            # 音訊檔案處理，兩個限制都必須避開：
+            # 1. 單次請求音訊長度上限約 1400 秒 (閾值設 MAX_TRANSCRIBE_SECONDS)
+            # 2. 單檔大小上限 25 MB (MAX_TRANSCRIBE_FILE_BYTES，已留安全邊際)
+            # 下載器輸出 192 kbps mp3 (約 1.44 MB/分鐘)，1300 秒就已超過 25 MB，
+            # 因此檔案大小才是實務上先踩到的那條線，必須一併檢查。
+            size_limit = self.MAX_TRANSCRIBE_FILE_BYTES
             should_split = False
-            if audio_duration and audio_duration > 1300:
+            if file_bytes > size_limit:
+                should_split = True
+                self.progress_callback(
+                    "轉錄", 18,
+                    f"音訊檔案 ({file_size:.1f} MB) 超過大小上限，將分段轉錄..."
+                )
+            elif audio_duration and audio_duration > self.MAX_TRANSCRIBE_SECONDS:
                 should_split = True
                 self.progress_callback(
                     "轉錄", 18,
                     f"音訊較長 ({audio_duration:.0f}秒)，將分段轉錄..."
                 )
-            elif audio_duration is None and file_size > 20:
+            elif audio_duration is None and file_bytes > size_limit * 0.8:
                 should_split = True
                 self.progress_callback(
                     "轉錄", 18,
-                    f"無法取得音訊時長且檔案較大 ({file_size:.1f} MB)，將保守地分段轉錄..."
+                    f"無法取得音訊時長且檔案接近上限 ({file_size:.1f} MB)，將保守地分段轉錄..."
                 )
 
             if should_split:
@@ -503,9 +758,23 @@ class YouTubeSummarizer:
                     audio_path, duration_hint=audio_duration
                 )
                 if not segments:
-                    # 如果分段失敗，嘗試使用原始檔案
-                    logging.warning("音訊分段失敗，嘗試使用原始檔案")
-                    segments = [audio_path]
+                    # 已知原始檔案超過 API 限制，直接上傳只會拿到 413，
+                    # 因此明確報錯而非假裝還能處理
+                    raise RuntimeError(
+                        f"音訊需要分段但 FFmpeg 分段失敗 "
+                        f"(檔案 {file_size:.1f} MB)，無法轉錄。"
+                        f"請確認 FFmpeg 是否正常安裝。"
+                    )
+
+                # 分段後仍可能有單段過大 (例如來源位元率很高)，逐一檢查
+                oversized = [
+                    seg for seg in segments
+                    if os.path.getsize(seg) > size_limit
+                ]
+                if oversized:
+                    raise RuntimeError(
+                        f"分段後仍有 {len(oversized)} 段超過大小上限，無法轉錄。"
+                    )
             else:
                 segments = [audio_path]
                 self.progress_callback("轉錄", 18, "準備轉錄完整音訊...")
@@ -515,45 +784,41 @@ class YouTubeSummarizer:
             
             # 如果有效的 OpenAI API key，使用 OpenAI 轉錄
             if self.api_keys.get('openai') and self.openai_client:
-                logging.info("使用 OpenAI 的 Whisper 轉錄音訊...")
-                self.progress_callback("轉錄", 25, "使用 OpenAI Whisper 模型轉錄中...")
-                
+                logging.info(f"使用 OpenAI {self.whisper_model} 轉錄音訊...")
+                self.progress_callback(
+                    "轉錄", 25, f"使用 OpenAI {self.whisper_model} 模型轉錄中..."
+                )
+
                 combined_transcript = ""
-                
+
                 # 處理多個音訊段
                 for idx, segment_path in enumerate(segments):
                     segment_start_percent = 25 + (idx / len(segments)) * 55
-                    self.progress_callback("轉錄", int(segment_start_percent), 
+                    self.progress_callback("轉錄", int(segment_start_percent),
                                           f"轉錄第 {idx+1}/{len(segments)} 段音訊...")
-                    
-                    # 轉錄前發送另一個進度更新
-                    self.progress_callback("轉錄", int(segment_start_percent + 2), 
-                                          f"準備第 {idx+1}/{len(segments)} 段音訊檔案...")
-                    
-                    with open(segment_path, "rb") as audio_file:
-                        # 嘗試進行轉錄
-                        try:
-                            # 發送轉錄請求前再次更新進度
-                            self.progress_callback("轉錄", int(segment_start_percent + 5), 
-                                                  f"發送第 {idx+1}/{len(segments)} 段音訊至 Whisper API...")
-                            
-                            transcript_response = self.openai_client.audio.transcriptions.create(
-                                model=self.whisper_model,
-                                file=audio_file
-                            )
-                            combined_transcript += transcript_response.text + "\n\n"
-                            
-                            segment_complete = 25 + ((idx+1) / len(segments)) * 55
-                            self.progress_callback("轉錄", int(segment_complete), 
-                                                 f"已完成第 {idx+1}/{len(segments)} 段音訊轉錄")
-                            
-                        except Exception as e:
-                            error_msg = f"轉錄第 {idx+1}/{len(segments)} 段音訊時出錯: {str(e)}"
-                            logging.error(error_msg)
-                            # 使用 segment_start_percent 而不是 segment_complete，避免變數未定義錯誤
-                            self.progress_callback("轉錄", int(segment_start_percent), error_msg)
-                            # 任何分段失敗都視為失敗，避免靜默產生不完整轉錄文本
-                            raise
+
+                    # 嘗試進行轉錄
+                    try:
+                        # 發送轉錄請求前再次更新進度
+                        self.progress_callback(
+                            "轉錄", int(segment_start_percent + 5),
+                            f"發送第 {idx+1}/{len(segments)} 段音訊至轉錄 API..."
+                        )
+
+                        segment_text = self._transcribe_segment(segment_path, context)
+                        combined_transcript += segment_text + "\n\n"
+
+                        segment_complete = 25 + ((idx+1) / len(segments)) * 55
+                        self.progress_callback("轉錄", int(segment_complete),
+                                             f"已完成第 {idx+1}/{len(segments)} 段音訊轉錄")
+
+                    except Exception as e:
+                        error_msg = f"轉錄第 {idx+1}/{len(segments)} 段音訊時出錯: {str(e)}"
+                        logging.error(error_msg)
+                        # 使用 segment_start_percent 而不是 segment_complete，避免變數未定義錯誤
+                        self.progress_callback("轉錄", int(segment_start_percent), error_msg)
+                        # 任何分段失敗都視為失敗，避免靜默產生不完整轉錄文本
+                        raise
                 
                 # 完成轉錄
                 self.progress_callback("轉錄", 85, "轉錄完成，處理文本...")
@@ -580,10 +845,12 @@ class YouTubeSummarizer:
                 return {
                     "status": "success",
                     "transcript": combined_transcript,
-                    "transcript_path": transcript_path
+                    "transcript_path": transcript_path,
+                    # 實際使用的模型 (可能因降級與使用者選擇不同)
+                    "model_used": self.active_transcribe_model
                 }
             else:
-                error_msg = "未提供有效的 OpenAI API 金鑰，無法使用 Whisper 模型轉錄。"
+                error_msg = "未提供有效的 OpenAI API 金鑰，無法使用轉錄模型。"
                 logging.error(error_msg)
                 self.progress_callback("轉錄", 100, error_msg)
                 return {
@@ -856,13 +1123,23 @@ class YouTubeSummarizer:
                     
                     # 呼叫 OpenAI API - 使用不同的參數集
                     try:
-                        if is_o_series:
-                            # o-series 模型不支援 temperature, top_p 等參數
-                            logging.info(f"使用 o-series 模型 {openai_model} 進行推理...")
-                            response = self.openai_client.chat.completions.create(
-                                model=openai_model,
-                                messages=messages
-                            )
+                        if self.is_reasoning_model(openai_model):
+                            # 推理模型不支援 temperature/top_p，且要用
+                            # max_completion_tokens；推理 token 也吃輸出預算，
+                            # 因此額度開大以免摘要被截斷成空字串
+                            logging.info(f"使用推理模型 {openai_model} 進行摘要...")
+                            try:
+                                response = self.openai_client.chat.completions.create(
+                                    model=openai_model,
+                                    messages=messages,
+                                    max_completion_tokens=SUMMARY_MAX_OUTPUT_TOKENS
+                                )
+                            except TypeError:
+                                # 舊版 SDK 沒有 max_completion_tokens 具名參數
+                                response = self.openai_client.chat.completions.create(
+                                    model=openai_model,
+                                    messages=messages
+                                )
                         else:
                             # 一般模型支援完整參數集
                             logging.info(f"使用一般模型 {openai_model} 進行摘要...")
@@ -870,7 +1147,7 @@ class YouTubeSummarizer:
                                 model=openai_model,
                                 messages=messages,
                                 temperature=0.3,
-                                max_tokens=2000
+                                max_tokens=SUMMARY_MAX_OUTPUT_TOKENS
                             )
                     except Exception as api_error:
                         logging.error(f"OpenAI API 呼叫失敗 ({openai_model}): {api_error}")
@@ -1007,9 +1284,12 @@ def run_summary_process(url: str, keep_audio: bool = False,
                         openai_api_key: Optional[str] = None,
                         google_api_key: Optional[str] = None,
                         model_type: str = 'auto',
-                        gemini_model: str = 'gemini-3.5-flash',
-                        openai_model: str = 'gpt-5.4-mini',
-                        whisper_model: str = 'gpt-4o-transcribe') -> Dict[str, Any]:
+                        gemini_model: str = DEFAULT_GEMINI_MODEL,
+                        openai_model: str = DEFAULT_OPENAI_MODEL,
+                        whisper_model: str = DEFAULT_TRANSCRIBE_MODEL,
+                        transcribe_keywords: Optional[List[str]] = None,
+                        transcribe_languages: Optional[List[str]] = None,
+                        transcribe_prompt: Optional[str] = None) -> Dict[str, Any]:
     """
     執行完整的摘要處理流程
     
@@ -1023,7 +1303,10 @@ def run_summary_process(url: str, keep_audio: bool = False,
         model_type (str): 優先使用的模型，可選值為 'auto'、'openai'、'gemini'
         gemini_model (str): 使用的 Gemini 模型名稱
         openai_model (str): 使用的 OpenAI 模型名稱
-        whisper_model (str): 使用的 Whisper 模型名稱
+        whisper_model (str): 使用的轉錄模型名稱 (預設 gpt-transcribe)
+        transcribe_keywords (List[str]): 轉錄關鍵字提示 (藥名、縮寫等)
+        transcribe_languages (List[str]): 預期語言 ISO-639-1 代碼
+        transcribe_prompt (str): 額外的轉錄上下文提示
     返回:
         Dict: 包含處理結果的字典
     """
@@ -1056,9 +1339,12 @@ def run_summary_process(url: str, keep_audio: bool = False,
             model_preference=model_type,
             gemini_model=gemini_model,
             openai_model=openai_model,
-            whisper_model=whisper_model
+            whisper_model=whisper_model,
+            transcribe_keywords=transcribe_keywords,
+            transcribe_languages=transcribe_languages,
+            transcribe_prompt=transcribe_prompt
         )
-        
+
         # 下載影片並提取音訊
         download_result = summarizer.download_video(url)
         
@@ -1079,8 +1365,10 @@ def run_summary_process(url: str, keep_audio: bool = False,
              logging.error(f"下載成功但未找到有效的音訊檔案路徑: {audio_path}")
              raise ValueError("下載後未找到有效的音訊檔案")
 
-        # 轉錄音訊
-        transcribe_result = summarizer.transcribe_audio(audio_path)
+        # 轉錄音訊（把影片標題當作上下文，提升專有名詞辨識率）
+        transcribe_result = summarizer.transcribe_audio(
+            audio_path, context=video_title
+        )
         
         if transcribe_result.get('status') == 'error':
             logging.error(f"轉錄階段失敗: {transcribe_result.get('message')}")
@@ -1122,6 +1410,7 @@ def run_summary_process(url: str, keep_audio: bool = False,
             'summary': summary_result.get('summary'),
             'transcript': transcript,  # 添加轉錄文本到返回結果
             'model_used': summary_result.get('model_used'),
+            'transcribe_model_used': transcribe_result.get('model_used'),
             'usage': summary_result.get('usage'),
             'processing_time': processing_time,
             'status': 'success'
