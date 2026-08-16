@@ -12,6 +12,7 @@ import time
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
+import html
 import logging
 import re
 import uuid
@@ -20,6 +21,9 @@ from contextlib import asynccontextmanager  # Added for lifespan
 # 導入新的模塊
 from config import (
     AppConfig,
+    APP_VERSION,
+    APP_RELEASE_DATE,
+    APP_RELEASE_NOTES,
     DEFAULT_TRANSCRIBE_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_GEMINI_MODEL,
@@ -670,7 +674,8 @@ async def health_check():
         "status": "healthy",
         "service": "YouTube Summarizer",
         "tasks_loaded": len(task_manager.tasks),
-        "version": "1.0.0"
+        "version": APP_VERSION,
+        "release_date": APP_RELEASE_DATE
     }
 
 # Web 前端: 首頁
@@ -711,7 +716,22 @@ async def home(request: Request):
                 text-align: center;
                 color: #666;
                 margin-top: 0;
+                margin-bottom: 10px;
+            }
+            .version-badge {
+                text-align: center;
+                margin-top: 0;
                 margin-bottom: 30px;
+                font-size: 13px;
+                color: #888;
+            }
+            .version-badge span {
+                display: inline-block;
+                background-color: #eef4fb;
+                border: 1px solid #d3e2f2;
+                border-radius: 12px;
+                padding: 3px 12px;
+                cursor: help;
             }
             .container {
                 background: white;
@@ -1336,6 +1356,7 @@ async def home(request: Request):
     <body>
         <h1>YouTube 影片摘要服務</h1>
         <p class="subtitle">幫助您快速獲取影片核心內容，節省寶貴時間</p>
+        <p class="version-badge"><span title="{{APP_RELEASE_NOTES}}">v{{APP_VERSION}} · 更新於 {{APP_RELEASE_DATE}}</span></p>
         
         <div class="container">
             <h2>開始使用</h2>
@@ -2287,7 +2308,24 @@ async def home(request: Request):
 </body>
 </html>
     """
+    # 版本資訊以 placeholder 置換，避免用 .format() 誤解析頁面裡大量的 JS 大括號
+    html_content = (
+        html_content
+        .replace("{{APP_VERSION}}", APP_VERSION)
+        .replace("{{APP_RELEASE_DATE}}", APP_RELEASE_DATE)
+        .replace("{{APP_RELEASE_NOTES}}", html.escape(APP_RELEASE_NOTES, quote=True))
+    )
     return HTMLResponse(content=html_content)
+
+# API 端點: 版本資訊
+@app.get("/api/version")
+async def get_version():
+    """回傳目前執行的版本，方便確認部署是否更新成功"""
+    return {
+        "version": APP_VERSION,
+        "release_date": APP_RELEASE_DATE,
+        "release_notes": APP_RELEASE_NOTES,
+    }
 
 # 新增：Cookies 上傳端點
 def _save_cookies_content(content_str: str) -> dict:

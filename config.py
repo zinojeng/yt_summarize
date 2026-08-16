@@ -4,6 +4,16 @@
 import os
 from typing import Optional
 
+# 版本資訊 (顯示於網頁右上角與 /health、/api/version)
+# 改版時請一併更新這三個值，方便從瀏覽器確認跑的是哪一版
+APP_VERSION = "1.1.0"
+APP_RELEASE_DATE = "2026-08-16"
+APP_RELEASE_NOTES = (
+    "轉錄升級 gpt-transcribe (支援關鍵字/語言提示)；"
+    "摘要升級 GPT-5.6 系列與 Gemini 3.6 Flash；"
+    "修正音訊 25MB 分段門檻與失敗任務誤報成功"
+)
+
 # 轉錄模型 (OpenAI 2026 新一代語音轉錄)
 # gpt-transcribe 取代 gpt-4o-transcribe 成為檔案轉錄的預設首選，
 # 支援 prompt / keywords / languages 提示，對中英夾雜、專有名詞辨識更佳。
