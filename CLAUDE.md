@@ -169,3 +169,50 @@ API keys can be provided via:
    ```
 
 **注意**: Cookies 必須是新鮮的 (從瀏覽器重新導出)，過期的 cookies 會導致驗證失敗。
+
+### 下載出現 HTTP 403 Forbidden
+
+**症狀**: metadata 抓得到 (`--skip-download --print title` 正常)，但實際下載時
+`ERROR: unable to download video data: HTTP Error 403: Forbidden`
+
+**原因**: yt-dlp 預設選用的 player client (常見是 `android vr`) 取得的
+googlevideo 網址會被 YouTube 拒絕。**升級 yt-dlp 和清 cache 都無法解決**，
+cookies 也是新鮮的 —— 這與 SABR/challenge 是不同的問題。
+
+**解決方案**: 改用其他 player client。程式碼的 `ydl_opts` 已內建輪替清單：
+
+```python
+'extractor_args': {
+    'youtube': {
+        'player_client': ['web_embedded', 'default', 'web_safari', 'tv', 'mweb']
+    }
+},
+```
+
+2026-08 實測 (直播存檔 `youtube.com/live/...`)：只有 `web_embedded` 可下載，
+`default` 回 403，`web_safari` / `tv` / `mweb` / `ios` 則是 "Requested format is
+not available"。若哪天 `web_embedded` 也失效，用以下指令逐一測試找出可用的：
+
+```bash
+python3.11 -m yt_dlp --cookies cookies/cookies.txt \
+  --extractor-args "youtube:player_client=CLIENT_NAME" \
+  -f bestaudio -o test.%(ext)s "VIDEO_URL"
+```
+
+**注意**: 用 `--download-sections` 測試會誤判。該參數讓 ffmpeg 直接抓 URL
+但不帶 cookies/headers，本來就會 403，與此問題無關。
+
+### 支援的網址格式
+
+`SecurityValidator.YOUTUBE_URL_PATTERNS` 白名單目前含：
+`watch?v=`、`embed/`、`youtu.be/`、`v/`、`shorts/`、`live/`。
+新增格式時記得一併更新，否則網頁會直接回「請提供有效的 YouTube URL」。
+
+### Google API 金鑰格式
+
+Google 有兩種金鑰格式，驗證正則兩種都要放行：
+- 舊格式: `AIzaSy...` (39 字元)
+- 新格式: `AQ.Ab8RN6...` (**含點號**)
+
+`SecurityValidator.validate_google_api_key` 的正則若不允許 `.`，
+新版金鑰會被誤判為「包含無效字符」。

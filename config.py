@@ -6,12 +6,12 @@ from typing import Optional
 
 # 版本資訊 (顯示於網頁右上角與 /health、/api/version)
 # 改版時請一併更新這三個值，方便從瀏覽器確認跑的是哪一版
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 APP_RELEASE_DATE = "2026-08-16"
 APP_RELEASE_NOTES = (
-    "轉錄升級 gpt-transcribe (支援關鍵字/語言提示)；"
-    "摘要升級 GPT-5.6 系列與 Gemini 3.6 Flash；"
-    "修正音訊 25MB 分段門檻與失敗任務誤報成功"
+    "支援 /live/ 直播網址與 Google 新版 AQ. 金鑰格式；"
+    "修正 YouTube 下載 403 (自動輪替 player client)；"
+    "轉錄 gpt-transcribe、摘要 GPT-5.6 系列與 Gemini 3.6 Flash"
 )
 
 # 轉錄模型 (OpenAI 2026 新一代語音轉錄)

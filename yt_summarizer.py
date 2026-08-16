@@ -212,6 +212,17 @@ class YouTubeSummarizer:
             # 格式必須是 dict，不是 list
             'js_runtimes': {'node': {}},
             'remote_components': {'ejs:github': {}},
+
+            # 依序嘗試多個 player client。YouTube 會對部分 client 回 403
+            # (常見於直播存檔，預設的 android vr client 取得的 googlevideo
+            # 網址會被拒)，列出多個讓 yt-dlp 自動換下一個重試。
+            'extractor_args': {
+                'youtube': {
+                    'player_client': [
+                        'web_embedded', 'default', 'web_safari', 'tv', 'mweb'
+                    ]
+                }
+            },
         }
         self.pbar = None
 

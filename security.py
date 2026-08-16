@@ -22,6 +22,8 @@ class SecurityValidator:
         r'^https?://youtu\.be/[\w\-_]+',
         r'^https?://(?:www\.)?youtube\.com/v/[\w\-_]+',
         r'^https?://(?:www\.)?youtube\.com/shorts/[\w\-_]+',
+        # 直播 (含已結束的直播存檔) 網址
+        r'^https?://(?:www\.)?youtube\.com/live/[\w\-_]+',
     ]
     
     # OpenAI API 金鑰模式
@@ -87,9 +89,10 @@ class SecurityValidator:
             return {"valid": False, "error": "Google API 金鑰長度不足"}
         
         # 檢查是否包含危險字符
-        if not re.match(r'^[a-zA-Z0-9\-_]+$', api_key):
+        # 允許點號：Google 新版金鑰格式為 AQ.xxxxx，舊格式為 AIzaSy...
+        if not re.match(r'^[a-zA-Z0-9\-_.]+$', api_key):
             return {"valid": False, "error": "Google API 金鑰包含無效字符"}
-        
+
         return {"valid": True, "sanitized_key": api_key}
     
     @classmethod
